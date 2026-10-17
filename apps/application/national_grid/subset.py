@@ -1,4 +1,4 @@
-"""Copy one completed national build into a Tuscany-only database."""
+"""Copy completed national builds for chosen regions into another database."""
 
 from __future__ import annotations
 
@@ -46,7 +46,10 @@ _APPLICATION_APPS = {
 
 
 class TuscanySubsetError(RuntimeError):
-    """Report an unsafe or incomplete Tuscany subset copy."""
+    """Report an unsafe or incomplete region subset copy."""
+
+
+RegionSubsetError = TuscanySubsetError
 
 
 class DestinationNotEmptyError(TuscanySubsetError):
@@ -55,6 +58,45 @@ class DestinationNotEmptyError(TuscanySubsetError):
 
 class SourceBuildError(TuscanySubsetError):
     """Report missing or unfinished source builds."""
+
+
+@dataclass(frozen=True)
+class RegionSubsetResult:
+    """Return copied counts and the generated layer artifact for a list of regions."""
+
+    source_grid_version: str
+    source_forest_version: str
+    source_terrain_version: str
+    grid_version: str
+    forest_version: str
+    terrain_version: str
+    region_codes: list[str]
+    region_names: dict[str, str]
+    region_squares: dict[str, int]
+    grid_cells_reused: int
+    counts: dict[str, int]
+    layer_path: Path | None
+    layer_sha256: str | None
+    dry_run: bool = False
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return JSON-safe preparation details."""
+        return {
+            "source_grid_version": self.source_grid_version,
+            "source_forest_version": self.source_forest_version,
+            "source_terrain_version": self.source_terrain_version,
+            "grid_version": self.grid_version,
+            "forest_version": self.forest_version,
+            "terrain_version": self.terrain_version,
+            "region_codes": list(self.region_codes),
+            "region_names": dict(self.region_names),
+            "region_squares": dict(self.region_squares),
+            "grid_cells_reused": self.grid_cells_reused,
+            "counts": dict(self.counts),
+            "dry_run": self.dry_run,
+            "layer_path": None if self.layer_path is None else str(self.layer_path),
+            "layer_sha256": self.layer_sha256,
+        }
 
 
 @dataclass(frozen=True)
@@ -103,203 +145,356 @@ def prepare_tuscany_subset(
     output_dir: Path,
     region_code: str = TUSCANY_ISTAT_CODE,
 ) -> TuscanySubsetResult:
-    """Copy completed static records for one Italian region.
+    """Copy completed static records for one Italian region into an empty database.
 
     Exclude weather and estimates so the normal worker can populate them later.
     """
+    result = _prepare_subset(
+        source_alias=source_alias,
+        target_alias=target_alias,
+        source_grid_version=source_grid_version,
+        source_forest_version=source_forest_version,
+        source_terrain_version=source_terrain_version,
+        grid_version=grid_version,
+        forest_version=forest_version,
+        terrain_version=terrain_version,
+        output_dir=output_dir,
+        region_codes=[region_code],
+        allow_non_empty_target=False,
+        dry_run=False,
+    )
+    assert result.layer_path is not None and result.layer_sha256 is not None
+    return TuscanySubsetResult(
+        source_grid_version=result.source_grid_version,
+        source_forest_version=result.source_forest_version,
+        source_terrain_version=result.source_terrain_version,
+        grid_version=result.grid_version,
+        forest_version=result.forest_version,
+        terrain_version=result.terrain_version,
+        region_code=region_code,
+        region_name=result.region_names[region_code],
+        counts=result.counts,
+        layer_path=result.layer_path,
+        layer_sha256=result.layer_sha256,
+    )
+
+
+def prepare_region_subset(
+    *,
+    source_alias: str,
+    target_alias: str,
+    source_grid_version: str,
+    source_forest_version: str,
+    source_terrain_version: str,
+    grid_version: str,
+    forest_version: str,
+    terrain_version: str,
+    output_dir: Path,
+    region_codes: list[str],
+    dry_run: bool = False,
+) -> RegionSubsetResult:
+    """Add the static records of several regions to a database that already holds data.
+
+    Never change an existing row. Grid cells that the target already holds are reused.
+    """
+    return _prepare_subset(
+        source_alias=source_alias,
+        target_alias=target_alias,
+        source_grid_version=source_grid_version,
+        source_forest_version=source_forest_version,
+        source_terrain_version=source_terrain_version,
+        grid_version=grid_version,
+        forest_version=forest_version,
+        terrain_version=terrain_version,
+        output_dir=output_dir,
+        region_codes=region_codes,
+        allow_non_empty_target=True,
+        dry_run=dry_run,
+    )
+
+
+def _prepare_subset(
+    *,
+    source_alias: str,
+    target_alias: str,
+    source_grid_version: str,
+    source_forest_version: str,
+    source_terrain_version: str,
+    grid_version: str,
+    forest_version: str,
+    terrain_version: str,
+    output_dir: Path,
+    region_codes: list[str],
+    allow_non_empty_target: bool,
+    dry_run: bool,
+) -> RegionSubsetResult:
     _ensure_distinct_databases(source_alias=source_alias, target_alias=target_alias)
-    _ensure_empty_target(alias=target_alias)
-    source_grid, source_forest, source_terrain, source_region = _load_source_builds(
+    if len({grid_version, forest_version, terrain_version}) != 3:
+        raise TuscanySubsetError("Subset grid, forest and terrain versions must be distinct.")
+    if allow_non_empty_target:
+        _ensure_new_versions(
+            alias=target_alias,
+            grid_version=grid_version,
+            forest_version=forest_version,
+            terrain_version=terrain_version,
+        )
+    else:
+        _ensure_empty_target(alias=target_alias)
+    source_grid, source_forest, source_terrain, source_regions = _load_source_builds(
         alias=source_alias,
         source_grid_version=source_grid_version,
         source_forest_version=source_forest_version,
         source_terrain_version=source_terrain_version,
-        region_code=region_code,
+        region_codes=region_codes,
     )
-    if len({grid_version, forest_version, terrain_version}) != 3:
-        raise TuscanySubsetError("Subset grid, forest and terrain versions must be distinct.")
+    source_region_ids = [region.id for region in source_regions]
     memberships = _source_membership_keys(
         alias=source_alias,
         build_id=source_grid.id,
-        region_id=source_region.id,
+        region_ids=source_region_ids,
     )
-    selected_membership_ids = {row["id"] for row in memberships}
+    code_by_region_id = {region.id: region.istat_code for region in source_regions}
+    region_squares = {region.istat_code: 0 for region in source_regions}
+    for row in memberships:
+        region_squares[code_by_region_id[row["owner_region_id"]]] += 1
     _validate_habitat_memberships(
         alias=source_alias,
         model=ForestCell,
         build_id=source_forest.id,
         grid_build_id=source_grid.id,
-        expected_membership_ids=selected_membership_ids,
+        expected_membership_ids={row["id"] for row in memberships},
         label="forest",
-        scope_to_expected=True,
+        owner_region_ids=source_region_ids,
     )
     _validate_habitat_memberships(
         alias=source_alias,
         model=TerrainCell,
         build_id=source_terrain.id,
         grid_build_id=source_grid.id,
-        expected_membership_ids=selected_membership_ids,
+        expected_membership_ids={row["id"] for row in memberships},
         label="terrain",
-        scope_to_expected=True,
+        owner_region_ids=source_region_ids,
     )
+    cell_ids = {row["cell_id"] for row in memberships}
+    source_chunk_ids = {row["chunk_id"] for row in memberships}
+    region_names = {region.istat_code: region.name for region in source_regions}
+    if len(region_codes) == 1 and not allow_non_empty_target:
+        label: dict[str, Any] = {
+            "subset": "tuscany",
+            "subset_region_code": region_codes[0],
+            "subset_region_name": region_names[region_codes[0]],
+        }
+    else:
+        label = {"subset": "regions", "region_codes": list(region_codes)}
+    fingerprint_key = ",".join(region_codes)
+    result_fields: dict[str, Any] = {
+        "source_grid_version": source_grid.version,
+        "source_forest_version": source_forest.version,
+        "source_terrain_version": source_terrain.version,
+        "grid_version": grid_version,
+        "forest_version": forest_version,
+        "terrain_version": terrain_version,
+        "region_codes": list(region_codes),
+        "region_names": region_names,
+        "region_squares": region_squares,
+    }
+
+    if dry_run:
+        grid_cells_reused = _copy_cells(
+            alias=target_alias, source_alias=source_alias, cell_ids=cell_ids, write=False
+        )
+        forest_cells = ForestCell.objects.using(source_alias).filter(
+            build=source_forest, grid_build_cell__owner_region_id__in=source_region_ids
+        )
+        return RegionSubsetResult(
+            **result_fields,
+            grid_cells_reused=grid_cells_reused,
+            counts={
+                "grid_regions": len(source_regions),
+                "grid_chunks": len(source_chunk_ids),
+                "grid_cells": len(memberships),
+                "grid_cells_to_create": len(cell_ids) - grid_cells_reused,
+                "forest_chunks": ForestChunk.objects.using(source_alias)
+                .filter(build=source_forest, grid_chunk_id__in=source_chunk_ids)
+                .count(),
+                "forest_cells": forest_cells.count(),
+                "forest_cells_with_forest": forest_cells.filter(is_forest=True).count(),
+                "terrain_chunks": TerrainChunk.objects.using(source_alias)
+                .filter(build=source_terrain, grid_chunk_id__in=source_chunk_ids)
+                .count(),
+                "terrain_cells": TerrainCell.objects.using(source_alias)
+                .filter(
+                    build=source_terrain, grid_build_cell__owner_region_id__in=source_region_ids
+                )
+                .count(),
+                "estimate_updates": 0,
+                "weather_rows": 0,
+            },
+            layer_path=None,
+            layer_sha256=None,
+            dry_run=True,
+        )
 
     output_path = Path(output_dir) / forest_version / "forest_layer_2000m.geojson.gz"
-    with transaction.atomic(using=target_alias):
-        target_grid = _copy_grid_build(
-            source=source_grid,
-            alias=target_alias,
-            version=grid_version,
-            region_code=region_code,
-            region_name=source_region.name,
-        )
-        region_id_map = _copy_region(
-            source=source_region,
-            target_build=target_grid,
-            alias=target_alias,
-        )
-        cell_ids = {row["cell_id"] for row in memberships}
-        source_chunk_ids = {row["chunk_id"] for row in memberships}
-        _copy_cells(alias=target_alias, source_alias=source_alias, cell_ids=cell_ids)
-        grid_chunk_map = _copy_grid_chunks(
-            alias=target_alias,
-            source_alias=source_alias,
-            source_build_id=source_grid.id,
-            target_build=target_grid,
-            chunk_ids=source_chunk_ids,
-            membership_rows=memberships,
-        )
-        membership_id_map = _copy_memberships(
-            alias=target_alias,
-            source_alias=source_alias,
-            source_build_id=source_grid.id,
-            target_build=target_grid,
-            memberships=memberships,
-            grid_chunk_map=grid_chunk_map,
-            region_id_map=region_id_map,
-        )
-        _finish_grid_build(
-            build=target_grid,
-            alias=target_alias,
-            chunk_count=len(grid_chunk_map),
-            cell_count=len(membership_id_map),
-        )
+    layer_written = False
+    try:
+        with transaction.atomic(using=target_alias):
+            grid_cells_reused = _copy_cells(
+                alias=target_alias, source_alias=source_alias, cell_ids=cell_ids, write=True
+            )
+            target_grid = _copy_grid_build(
+                source=source_grid,
+                alias=target_alias,
+                version=grid_version,
+                label=label,
+                fingerprint_key=fingerprint_key,
+            )
+            region_id_map = _copy_regions(
+                sources=source_regions, target_build=target_grid, alias=target_alias
+            )
+            grid_chunk_map = _copy_grid_chunks(
+                alias=target_alias,
+                source_alias=source_alias,
+                source_build_id=source_grid.id,
+                target_build=target_grid,
+                chunk_ids=source_chunk_ids,
+                membership_rows=memberships,
+            )
+            membership_id_map = _copy_memberships(
+                alias=target_alias,
+                source_alias=source_alias,
+                source_build_id=source_grid.id,
+                target_build=target_grid,
+                memberships=memberships,
+                grid_chunk_map=grid_chunk_map,
+                region_id_map=region_id_map,
+            )
+            _finish_grid_build(
+                build=target_grid,
+                alias=target_alias,
+                chunk_count=len(grid_chunk_map),
+                cell_count=len(membership_id_map),
+            )
 
-        target_forest = _copy_forest_build(
-            source=source_forest,
-            alias=target_alias,
-            version=forest_version,
-            target_grid=target_grid,
-            region_code=region_code,
-            region_name=source_region.name,
-        )
-        forest_chunk_map = _copy_forest_chunks(
-            alias=target_alias,
-            source_alias=source_alias,
-            source_build_id=source_forest.id,
-            target_build=target_forest,
-            grid_chunk_map=grid_chunk_map,
-        )
-        forest_cell_count, forest_count, weather_count, forest_gap_count = _copy_forest_cells(
-            alias=target_alias,
-            source_alias=source_alias,
-            source_build_id=source_forest.id,
-            target_build=target_forest,
-            membership_id_map=membership_id_map,
-            forest_chunk_map=forest_chunk_map,
-        )
+            target_forest = _copy_forest_build(
+                source=source_forest,
+                alias=target_alias,
+                version=forest_version,
+                target_grid=target_grid,
+                label=label,
+                fingerprint_key=fingerprint_key,
+            )
+            forest_chunk_map = _copy_forest_chunks(
+                alias=target_alias,
+                source_alias=source_alias,
+                source_build_id=source_forest.id,
+                target_build=target_forest,
+                grid_chunk_map=grid_chunk_map,
+            )
+            forest_cell_count, forest_count, weather_count, forest_gap_count = _copy_forest_cells(
+                alias=target_alias,
+                source_alias=source_alias,
+                source_build_id=source_forest.id,
+                target_build=target_forest,
+                membership_id_map=membership_id_map,
+                forest_chunk_map=forest_chunk_map,
+                source_region_ids=source_region_ids,
+            )
 
-        target_terrain = _copy_terrain_build(
-            source=source_terrain,
-            alias=target_alias,
-            version=terrain_version,
-            target_grid=target_grid,
-            region_code=region_code,
-            region_name=source_region.name,
-        )
-        terrain_chunk_map = _copy_terrain_chunks(
-            alias=target_alias,
-            source_alias=source_alias,
-            source_build_id=source_terrain.id,
-            target_build=target_terrain,
-            grid_chunk_map=grid_chunk_map,
-        )
-        terrain_tile_map = _copy_terrain_tiles(
-            alias=target_alias,
-            source_alias=source_alias,
-            source_build_id=source_terrain.id,
-            target_build=target_terrain,
-            terrain_chunk_map=terrain_chunk_map,
-        )
-        _copy_terrain_chunk_sources(
-            alias=target_alias,
-            source_alias=source_alias,
-            terrain_chunk_map=terrain_chunk_map,
-            terrain_tile_map=terrain_tile_map,
-        )
-        terrain_cell_count, terrain_gap_count = _copy_terrain_cells(
-            alias=target_alias,
-            source_alias=source_alias,
-            source_build_id=source_terrain.id,
-            target_build=target_terrain,
-            membership_id_map=membership_id_map,
-            terrain_chunk_map=terrain_chunk_map,
-        )
-        target_membership_ids = set(membership_id_map.values())
-        _validate_habitat_memberships(
-            alias=target_alias,
-            model=ForestCell,
-            build_id=target_forest.id,
-            grid_build_id=target_grid.id,
-            expected_membership_ids=target_membership_ids,
-            label="target forest",
-        )
-        _validate_habitat_memberships(
-            alias=target_alias,
-            model=TerrainCell,
-            build_id=target_terrain.id,
-            grid_build_id=target_grid.id,
-            expected_membership_ids=target_membership_ids,
-            label="target terrain",
-        )
+            target_terrain = _copy_terrain_build(
+                source=source_terrain,
+                alias=target_alias,
+                version=terrain_version,
+                target_grid=target_grid,
+                label=label,
+                fingerprint_key=fingerprint_key,
+            )
+            terrain_chunk_map = _copy_terrain_chunks(
+                alias=target_alias,
+                source_alias=source_alias,
+                source_build_id=source_terrain.id,
+                target_build=target_terrain,
+                grid_chunk_map=grid_chunk_map,
+            )
+            terrain_tile_map = _copy_terrain_tiles(
+                alias=target_alias,
+                source_alias=source_alias,
+                source_build_id=source_terrain.id,
+                target_build=target_terrain,
+                terrain_chunk_map=terrain_chunk_map,
+            )
+            _copy_terrain_chunk_sources(
+                alias=target_alias,
+                source_alias=source_alias,
+                terrain_chunk_map=terrain_chunk_map,
+                terrain_tile_map=terrain_tile_map,
+            )
+            terrain_cell_count, terrain_gap_count = _copy_terrain_cells(
+                alias=target_alias,
+                source_alias=source_alias,
+                source_build_id=source_terrain.id,
+                target_build=target_terrain,
+                membership_id_map=membership_id_map,
+                terrain_chunk_map=terrain_chunk_map,
+                source_region_ids=source_region_ids,
+            )
+            target_membership_ids = set(membership_id_map.values())
+            _validate_habitat_memberships(
+                alias=target_alias,
+                model=ForestCell,
+                build_id=target_forest.id,
+                grid_build_id=target_grid.id,
+                expected_membership_ids=target_membership_ids,
+                label="target forest",
+            )
+            _validate_habitat_memberships(
+                alias=target_alias,
+                model=TerrainCell,
+                build_id=target_terrain.id,
+                grid_build_id=target_grid.id,
+                expected_membership_ids=target_membership_ids,
+                label="target terrain",
+            )
 
-        artifact = layer.write_forest_layer(
-            rows=layer.rows_from_cells(
-                cells=ForestCell.objects.using(target_alias).filter(build=target_forest)
-            ),
-            output_path=output_path,
-        )
-        _finish_forest_build(
-            build=target_forest,
-            alias=target_alias,
-            cell_count=forest_cell_count,
-            forest_count=forest_count,
-            weather_count=weather_count,
-            gap_count=forest_gap_count,
-            chunk_count=len(forest_chunk_map),
-            layer_path=artifact.path,
-            layer_sha256=artifact.sha256,
-            layer_raw_bytes=artifact.raw_bytes,
-            layer_gzip_bytes=artifact.gzip_bytes,
-        )
-        _finish_terrain_build(
-            build=target_terrain,
-            alias=target_alias,
-            cell_count=terrain_cell_count,
-            gap_count=terrain_gap_count,
-            chunk_count=len(terrain_chunk_map),
-        )
+            artifact = layer.write_forest_layer(
+                rows=layer.rows_from_cells(
+                    cells=ForestCell.objects.using(target_alias).filter(build=target_forest)
+                ),
+                output_path=output_path,
+            )
+            layer_written = True
+            _finish_forest_build(
+                build=target_forest,
+                alias=target_alias,
+                cell_count=forest_cell_count,
+                forest_count=forest_count,
+                weather_count=weather_count,
+                gap_count=forest_gap_count,
+                chunk_count=len(forest_chunk_map),
+                layer_path=artifact.path,
+                layer_sha256=artifact.sha256,
+                layer_raw_bytes=artifact.raw_bytes,
+                layer_gzip_bytes=artifact.gzip_bytes,
+            )
+            _finish_terrain_build(
+                build=target_terrain,
+                alias=target_alias,
+                cell_count=terrain_cell_count,
+                gap_count=terrain_gap_count,
+                chunk_count=len(terrain_chunk_map),
+            )
+    except BaseException:
+        # The layer file is written before the transaction commits. Remove it so a
+        # rolled back copy does not leave a file that no build row points to.
+        if layer_written:
+            _remove_layer_file(path=output_path)
+        raise
 
-    return TuscanySubsetResult(
-        source_grid_version=source_grid.version,
-        source_forest_version=source_forest.version,
-        source_terrain_version=source_terrain.version,
-        grid_version=grid_version,
-        forest_version=forest_version,
-        terrain_version=terrain_version,
-        region_code=region_code,
-        region_name=source_region.name,
+    return RegionSubsetResult(
+        **result_fields,
+        grid_cells_reused=grid_cells_reused,
         counts={
-            "grid_regions": 1,
+            "grid_regions": len(region_id_map),
             "grid_chunks": len(grid_chunk_map),
             "grid_cells": len(membership_id_map),
             "forest_chunks": len(forest_chunk_map),
@@ -317,6 +512,28 @@ def prepare_tuscany_subset(
         layer_path=artifact.path,
         layer_sha256=artifact.sha256,
     )
+
+
+def _remove_layer_file(*, path: Path) -> None:
+    path.unlink(missing_ok=True)
+    try:
+        path.parent.rmdir()
+    except OSError:
+        pass
+
+
+def _ensure_new_versions(
+    *, alias: str, grid_version: str, forest_version: str, terrain_version: str
+) -> None:
+    for model, version in (
+        (GridBuild, grid_version),
+        (ForestBuild, forest_version),
+        (TerrainBuild, terrain_version),
+    ):
+        if model.objects.using(alias).filter(version=version).exists():
+            raise TuscanySubsetError(
+                f"Target database already has a {model._meta.label} with version {version!r}."
+            )
 
 
 def _ensure_distinct_databases(*, source_alias: str, target_alias: str) -> None:
@@ -345,8 +562,8 @@ def _load_source_builds(
     source_grid_version: str,
     source_forest_version: str,
     source_terrain_version: str,
-    region_code: str,
-) -> tuple[GridBuild, ForestBuild, TerrainBuild, GridRegion]:
+    region_codes: list[str],
+) -> tuple[GridBuild, ForestBuild, TerrainBuild, list[GridRegion]]:
     try:
         grid = GridBuild.objects.using(alias).get(version=source_grid_version)
         forest = ForestBuild.objects.using(alias).get(version=source_forest_version)
@@ -361,18 +578,36 @@ def _load_source_builds(
         raise SourceBuildError(f"Source terrain build {terrain.version!r} is not completed.")
     if forest.grid_build_id != grid.id or terrain.grid_build_id != grid.id:
         raise SourceBuildError("Source forest and terrain builds do not use the source grid build.")
-    region = GridRegion.objects.using(alias).filter(build=grid, istat_code=region_code).first()
-    if region is None:
-        raise SourceBuildError(f"Source grid has no region with ISTAT code {region_code!r}.")
-    return grid, forest, terrain, region
+    if not region_codes:
+        raise SourceBuildError("At least one region code is required.")
+    duplicates = sorted({code for code in region_codes if region_codes.count(code) > 1})
+    if duplicates:
+        raise SourceBuildError(f"Region codes are listed more than once: {duplicates}.")
+    found = {
+        region.istat_code: region
+        for region in GridRegion.objects.using(alias).filter(
+            build=grid, istat_code__in=region_codes
+        )
+    }
+    for code in region_codes:
+        if code not in found:
+            raise SourceBuildError(f"Source grid has no region with ISTAT code {code!r}.")
+    return grid, forest, terrain, [found[code] for code in region_codes]
 
 
 def _source_membership_keys(
-    *, alias: str, build_id: Any, region_id: Any
+    *,
+    alias: str,
+    build_id: Any,
+    region_id: Any = None,
+    region_ids: list[Any] | None = None,
 ) -> list[dict[str, Any]]:
+    selected = list(region_ids or [])
+    if region_id is not None:
+        selected.append(region_id)
     return list(
         GridBuildCell.objects.using(alias)
-        .filter(build_id=build_id, owner_region_id=region_id)
+        .filter(build_id=build_id, owner_region_id__in=selected)
         .order_by("id")
         .values("id", "cell_id", "chunk_id", "owner_region_id")
     )
@@ -386,13 +621,13 @@ def _validate_habitat_memberships(
     grid_build_id: Any,
     expected_membership_ids: set[Any],
     label: str,
-    scope_to_expected: bool = False,
+    owner_region_ids: list[Any] | None = None,
 ) -> None:
     queryset = model.objects.using(alias).filter(build_id=build_id)
     if queryset.exclude(grid_build_cell__build_id=grid_build_id).exists():
         raise SourceBuildError(f"The {label} rows contain a membership from another grid build.")
-    if scope_to_expected:
-        queryset = queryset.filter(grid_build_cell_id__in=expected_membership_ids)
+    if owner_region_ids is not None:
+        queryset = queryset.filter(grid_build_cell__owner_region_id__in=owner_region_ids)
     actual_membership_ids = set(queryset.values_list("grid_build_cell_id", flat=True))
     if actual_membership_ids != expected_membership_ids:
         missing = len(expected_membership_ids - actual_membership_ids)
@@ -416,14 +651,12 @@ def _copy_fields(instance: Model, *, excluded: set[str]) -> dict[str, Any]:
 
 
 def _copy_grid_build(
-    *, source: GridBuild, alias: str, version: str, region_code: str, region_name: str
+    *, source: GridBuild, alias: str, version: str, label: dict[str, Any], fingerprint_key: str
 ) -> GridBuild:
     metadata = copy.deepcopy(source.source_metadata)
     metadata.update(
         {
-            "subset": "tuscany",
-            "subset_region_code": region_code,
-            "subset_region_name": region_name,
+            **label,
             "source_build_version": source.version,
             "source_build_id": str(source.id),
         }
@@ -444,7 +677,7 @@ def _copy_grid_build(
             },
         ),
         version=version,
-        fingerprint=_subset_fingerprint(source.fingerprint, version, region_code),
+        fingerprint=_subset_fingerprint(source.fingerprint, version, fingerprint_key),
         status=GridBuild.Status.RUNNING,
         source_metadata=metadata,
         planned_chunk_count=0,
@@ -455,39 +688,58 @@ def _copy_grid_build(
     )
 
 
-def _copy_region(*, source: GridRegion, target_build: GridBuild, alias: str) -> dict[Any, Any]:
-    target = GridRegion.objects.using(alias).create(
-        build=target_build,
-        istat_code=source.istat_code,
-        name=source.name,
-        geometry=copy.deepcopy(source.geometry),
-    )
-    return {source.id: target.id}
-
-
-def _copy_cells(*, alias: str, source_alias: str, cell_ids: set[str]) -> None:
-    if not cell_ids:
-        raise SourceBuildError("The Tuscany region has no grid memberships.")
-    batch: list[GridCell] = []
-    for source in (
-        GridCell.objects.using(source_alias)
-        .filter(cell_id__in=cell_ids)
-        .order_by("cell_id")
-        .iterator(chunk_size=COPY_BATCH_SIZE)
-    ):
-        batch.append(
-            GridCell(
-                cell_id=source.cell_id,
-                corner_e=source.corner_e,
-                corner_n=source.corner_n,
-                geometry=copy.deepcopy(source.geometry),
-            )
+def _copy_regions(
+    *, sources: list[GridRegion], target_build: GridBuild, alias: str
+) -> dict[Any, Any]:
+    result: dict[Any, Any] = {}
+    for source in sources:
+        target = GridRegion.objects.using(alias).create(
+            build=target_build,
+            istat_code=source.istat_code,
+            name=source.name,
+            geometry=copy.deepcopy(source.geometry),
         )
-        if len(batch) >= COPY_BATCH_SIZE:
+        result[source.id] = target.id
+    return result
+
+
+def _copy_cells(*, alias: str, source_alias: str, cell_ids: set[str], write: bool) -> int:
+    """Create the cells the target lacks and return how many it already held.
+
+    Raise if an existing cell has other coordinates than the source.
+    """
+    if not cell_ids:
+        raise SourceBuildError("The selected regions have no grid memberships.")
+    ordered = sorted(cell_ids)
+    reused = 0
+    for start in range(0, len(ordered), COPY_BATCH_SIZE):
+        batch_ids = ordered[start : start + COPY_BATCH_SIZE]
+        existing = {
+            cell_id: (corner_e, corner_n)
+            for cell_id, corner_e, corner_n in GridCell.objects.using(alias)
+            .filter(cell_id__in=batch_ids)
+            .values_list("cell_id", "corner_e", "corner_n")
+        }
+        batch: list[GridCell] = []
+        for source in GridCell.objects.using(source_alias).filter(cell_id__in=batch_ids):
+            if source.cell_id in existing:
+                if existing[source.cell_id] != (source.corner_e, source.corner_n):
+                    raise TuscanySubsetError(
+                        f"Target cell {source.cell_id!r} has other coordinates than the source."
+                    )
+                reused += 1
+                continue
+            batch.append(
+                GridCell(
+                    cell_id=source.cell_id,
+                    corner_e=source.corner_e,
+                    corner_n=source.corner_n,
+                    geometry=copy.deepcopy(source.geometry),
+                )
+            )
+        if write and batch:
             GridCell.objects.using(alias).bulk_create(batch)
-            batch.clear()
-    if batch:
-        GridCell.objects.using(alias).bulk_create(batch)
+    return reused
 
 
 def _copy_grid_chunks(
@@ -521,7 +773,7 @@ def _copy_grid_chunks(
         )
         result[source.id] = target.id
     if set(result) != chunk_ids:
-        raise SourceBuildError("The source grid has a missing chunk for a Tuscany membership.")
+        raise SourceBuildError("The source grid has a missing chunk for a selected membership.")
     return result
 
 
@@ -535,13 +787,12 @@ def _copy_memberships(
     grid_chunk_map: dict[Any, Any],
     region_id_map: dict[Any, Any],
 ) -> dict[Any, Any]:
-    source_ids = [row["id"] for row in memberships]
     result: dict[Any, Any] = {}
     batch: list[GridBuildCell] = []
     batch_source_ids: list[Any] = []
     for source in (
         GridBuildCell.objects.using(source_alias)
-        .filter(build_id=source_build_id, id__in=source_ids)
+        .filter(build_id=source_build_id, owner_region_id__in=list(region_id_map))
         .order_by("id")
         .iterator(chunk_size=COPY_BATCH_SIZE)
     ):
@@ -564,8 +815,8 @@ def _copy_memberships(
     if batch:
         created = GridBuildCell.objects.using(alias).bulk_create(batch)
         result.update(zip(batch_source_ids, (item.id for item in created), strict=True))
-    if len(result) != len(source_ids):
-        raise SourceBuildError("The source membership copy did not preserve every Tuscany cell.")
+    if len(result) != len(memberships):
+        raise SourceBuildError("The source membership copy did not preserve every selected cell.")
     return result
 
 
@@ -585,15 +836,13 @@ def _copy_forest_build(
     alias: str,
     version: str,
     target_grid: GridBuild,
-    region_code: str,
-    region_name: str,
+    label: dict[str, Any],
+    fingerprint_key: str,
 ) -> ForestBuild:
     metadata = copy.deepcopy(source.source_metadata)
     metadata.update(
         {
-            "subset": "tuscany",
-            "subset_region_code": region_code,
-            "subset_region_name": region_name,
+            **label,
             "source_build_version": source.version,
             "source_build_id": str(source.id),
         }
@@ -624,7 +873,7 @@ def _copy_forest_build(
         ),
         version=version,
         grid_build=target_grid,
-        fingerprint=_subset_fingerprint(source.fingerprint, version, region_code),
+        fingerprint=_subset_fingerprint(source.fingerprint, version, fingerprint_key),
         status=ForestBuild.Status.RUNNING,
         source_metadata=metadata,
         planned_chunk_count=0,
@@ -674,6 +923,7 @@ def _copy_forest_cells(
     target_build: ForestBuild,
     membership_id_map: dict[Any, Any],
     forest_chunk_map: dict[Any, Any],
+    source_region_ids: list[Any],
 ) -> tuple[int, int, int, int]:
     count = forest_count = weather_count = gap_count = 0
     chunk_counts: dict[Any, int] = {}
@@ -681,7 +931,9 @@ def _copy_forest_cells(
     batch: list[ForestCell] = []
     for source in (
         ForestCell.objects.using(source_alias)
-        .filter(build_id=source_build_id, grid_build_cell_id__in=set(membership_id_map))
+        .filter(
+            build_id=source_build_id, grid_build_cell__owner_region_id__in=source_region_ids
+        )
         .order_by("id")
         .iterator(chunk_size=COPY_BATCH_SIZE)
     ):
@@ -749,15 +1001,13 @@ def _copy_terrain_build(
     alias: str,
     version: str,
     target_grid: GridBuild,
-    region_code: str,
-    region_name: str,
+    label: dict[str, Any],
+    fingerprint_key: str,
 ) -> TerrainBuild:
     metadata = copy.deepcopy(source.source_metadata)
     metadata.update(
         {
-            "subset": "tuscany",
-            "subset_region_code": region_code,
-            "subset_region_name": region_name,
+            **label,
             "source_build_version": source.version,
             "source_build_id": str(source.id),
         }
@@ -782,7 +1032,7 @@ def _copy_terrain_build(
         ),
         version=version,
         grid_build=target_grid,
-        fingerprint=_subset_fingerprint(source.fingerprint, version, region_code),
+        fingerprint=_subset_fingerprint(source.fingerprint, version, fingerprint_key),
         grid_fingerprint=target_grid.fingerprint,
         status=TerrainBuild.Status.RUNNING,
         source_metadata=metadata,
@@ -883,13 +1133,16 @@ def _copy_terrain_cells(
     target_build: TerrainBuild,
     membership_id_map: dict[Any, Any],
     terrain_chunk_map: dict[Any, Any],
+    source_region_ids: list[Any],
 ) -> tuple[int, int]:
     count = gap_count = 0
     chunk_counts: dict[Any, int] = {}
     batch: list[TerrainCell] = []
     for source in (
         TerrainCell.objects.using(source_alias)
-        .filter(build_id=source_build_id, grid_build_cell_id__in=set(membership_id_map))
+        .filter(
+            build_id=source_build_id, grid_build_cell__owner_region_id__in=source_region_ids
+        )
         .order_by("id")
         .iterator(chunk_size=COPY_BATCH_SIZE)
     ):

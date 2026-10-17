@@ -176,6 +176,156 @@ The October 2026 dump was built before the rename and holds an empty
 echo "DROP TABLE micometeo_map_cache;" | sudo dokku postgres:connect sporameteo-db
 ```
 
+## Load the inputs of other regions
+
+Issue #153 adds the grid, forest, terrain and host tree values of all 20
+regions next to the Tuscany data. The app keeps reading the Tuscany builds
+until `SPORAMETEO_FOREST_BUILD_VERSION` and `SPORAMETEO_TERRAIN_BUILD_VERSION`
+change. The load only adds rows, so the app keeps running.
+
+The grid, forest and terrain values come from the local national database
+`sporameteo_native`. The copy runs on the laptop and writes to production
+through an SSH tunnel. The host tree values are sampled on the VPS, where the
+JRC files are.
+
+Run every step outside the night tasks, which run from 00:30 to 02:30 UTC. The
+published run must not change between the check before and the check after.
+
+Deploy the commit with migration `estimate_updates.0008` first, and check out
+the same commit on the laptop.
+
+### Check before the load
+
+`tools/region_load/tuscany_check.sql` prints fingerprints of the Tuscany
+builds, squares, forest, terrain, input set and host tree values, of the
+published runs and of the results of the published Tuscany run, and then the
+database size in bytes:
+
+```sh
+ssh deploy@vps.sporameteo.com "sudo dokku postgres:connect sporameteo-db" \
+  < tools/region_load/tuscany_check.sql > tuscany_before.txt
+```
+
+### Copy the grid, forest and terrain values
+
+Read the address and password of the database, then open a tunnel to it. The
+tunnel stays in the foreground, so use a second terminal for the next steps:
+
+```sh
+ssh deploy@vps.sporameteo.com "sudo dokku postgres:info sporameteo-db --internal-ip"
+ssh deploy@vps.sporameteo.com "sudo dokku postgres:info sporameteo-db --dsn"
+ssh -N -L 15432:<internal ip>:5432 deploy@vps.sporameteo.com
+```
+
+In the second terminal, point `DATABASE_URL` at the tunnel. It is the DSN
+with `127.0.0.1:15432` in place of the host and port. The source options name
+the local national database. Pass all five of them, because any source option
+left out takes its value from `DATABASE_URL`, which is production:
+
+```sh
+export DATABASE_URL="postgres://postgres:<password>@127.0.0.1:15432/sporameteo_db"
+uv run python apps/application/manage.py prepare_region_map_database \
+  --regions all --dry-run \
+  --source-db-name sporameteo_native --source-db-user sporameteo \
+  --source-db-password "<local password>" \
+  --source-db-host 127.0.0.1 --source-db-port 5542 \
+  --source-forest-build-version italy-forest-copernicus-2018-v1 \
+  --source-terrain-build-version italy-terrain-glo30-2021-v2
+```
+
+The dry run lists the 20 regions and their squares and writes nothing. Run
+the same command without `--dry-run` for the copy. It creates
+`regions-all-grid-italy-500m-istat-2026-01-01-v1`,
+`regions-all-forest-italy-forest-copernicus-2018-v1` and
+`regions-all-terrain-italy-terrain-glo30-2021-v2`, and writes the forest layer
+file to `data/processed/mvp_forest/regions-all-forest-italy-forest-copernicus-2018-v1/`.
+The copy is one transaction. If the tunnel drops, nothing is stored and the
+layer file is removed, so the command can run again.
+
+On the laptop, against a local copy of the database, the copy took 7 minutes
+51 seconds and used 1.27 GB of memory on the laptop. It copies the 1,217,473
+squares of Italy and reuses the outlines of the 92,707 Tuscany squares that
+are already stored. The time through the tunnel also
+depends on the upload speed of the laptop and was not measured. Close the
+tunnel when the copy ends.
+
+Copy the layer file to the VPS through a staging folder, as for Tuscany:
+
+```sh
+ssh deploy@vps.sporameteo.com "mkdir -p \
+  ~/sporameteo_staging/forest/regions-all-forest-italy-forest-copernicus-2018-v1"
+scp data/processed/mvp_forest/regions-all-forest-italy-forest-copernicus-2018-v1/forest_layer_2000m.geojson.gz \
+  deploy@vps.sporameteo.com:sporameteo_staging/forest/regions-all-forest-italy-forest-copernicus-2018-v1/
+```
+
+On the VPS:
+
+```sh
+sudo dokku storage:mount sporameteo /home/deploy/sporameteo_staging:/staging
+sudo dokku run --no-tty sporameteo sh -c \
+  "cp -r /staging/forest/. /app/data/processed/mvp_forest/"
+sudo dokku storage:unmount sporameteo /home/deploy/sporameteo_staging:/staging
+rm -rf ~/sporameteo_staging
+```
+
+### Sample the host tree values
+
+On the VPS, the dry run reports each region as ready or names the missing
+source and the squares it affects. The real run samples the JRC files for the
+forest squares that have no stored values and records one input set per
+region:
+
+```sh
+sudo dokku run --no-tty sporameteo python apps/application/manage.py \
+  prepare_region_inputs --regions all --dry-run --skip-source-files \
+  --forest-build-version regions-all-forest-italy-forest-copernicus-2018-v1 \
+  --terrain-build-version regions-all-terrain-italy-terrain-glo30-2021-v2
+sudo dokku run --no-tty sporameteo python apps/application/manage.py \
+  prepare_region_inputs --regions all --skip-source-files \
+  --forest-build-version regions-all-forest-italy-forest-copernicus-2018-v1 \
+  --terrain-build-version regions-all-terrain-italy-terrain-glo30-2021-v2
+```
+
+All 20 regions must report `ready`. The Tuscany values are already stored, so
+the run samples 646,073 of the 717,104 forest squares.
+
+On the laptop, inside the app image limited to 2 CPUs and 384 MB without
+swap, the run took 850 seconds. The memory that cannot be freed peaked at
+260 MiB, and the process peaked at 337 MiB, file pages included. Nothing was
+killed. The VPS is 1.38 times slower, see `reports/italy_night_cost.md`, so the
+run takes about 850 times 1.38, about 20 minutes.
+
+### Check after the load
+
+Two checks follow. The first covers all of Italy. The dry run checks that
+every square of the 20 regions has a grid membership, forest and terrain
+values, and host tree values for every forest square:
+
+```sh
+sudo dokku run --no-tty sporameteo python apps/application/manage.py \
+  prepare_region_inputs --regions all --dry-run --skip-source-files \
+  --forest-build-version regions-all-forest-italy-forest-copernicus-2018-v1 \
+  --terrain-build-version regions-all-terrain-italy-terrain-glo30-2021-v2
+```
+
+All 20 regions must report `ready`, with 1,217,473 squares and 717,104 forest
+squares in the totals.
+
+The second check covers Tuscany, which the site serves today. Its data and its
+published run must not change:
+
+```sh
+ssh deploy@vps.sporameteo.com "sudo dokku postgres:connect sporameteo-db" \
+  < tools/region_load/tuscany_check.sql > tuscany_after.txt
+diff tuscany_before.txt tuscany_after.txt
+```
+
+Only the `size` line may differ. Record both sizes in the setup log.
+
+On the local copy, the database grew from 189,820,051 to 2,415,438,995 bytes.
+The largest new tables were the square memberships at 714 MB, the forest
+values at 461 MB, the squares at 412 MB and the terrain values at 383 MB.
+
 ## Environment
 
 Generate the secret key on the laptop:
