@@ -29,22 +29,7 @@ class Command(BaseCommand):
     help = "Copy completed grid, forest and terrain records into a Tuscany-only database."
 
     def add_arguments(self, parser: Any) -> None:
-        parser.add_argument("--source-alias", default=DEFAULT_SOURCE_ALIAS)
-        parser.add_argument("--target-alias", default=DEFAULT_TARGET_ALIAS)
-        parser.add_argument("--source-db-name")
-        parser.add_argument("--source-db-user")
-        parser.add_argument("--source-db-password")
-        parser.add_argument("--source-db-host")
-        parser.add_argument("--source-db-port")
-        parser.add_argument("--source-grid-build-version")
-        parser.add_argument(
-            "--source-forest-build-version",
-            default=getattr(settings, "SPORAMETEO_FOREST_BUILD_VERSION", ""),
-        )
-        parser.add_argument(
-            "--source-terrain-build-version",
-            default=getattr(settings, "SPORAMETEO_TERRAIN_BUILD_VERSION", ""),
-        )
+        add_source_arguments(parser)
         parser.add_argument("--grid-build-version")
         parser.add_argument("--forest-build-version")
         parser.add_argument("--terrain-build-version")
@@ -116,6 +101,26 @@ class Command(BaseCommand):
         except (TuscanySubsetError, SourceBuildError, OSError, KeyError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
         self.stdout.write(json.dumps(result, sort_keys=True))
+
+
+def add_source_arguments(parser: Any) -> None:
+    """Add the options that choose the source database and its builds."""
+    parser.add_argument("--source-alias", default=DEFAULT_SOURCE_ALIAS)
+    parser.add_argument("--target-alias", default=DEFAULT_TARGET_ALIAS)
+    parser.add_argument("--source-db-name")
+    parser.add_argument("--source-db-user")
+    parser.add_argument("--source-db-password")
+    parser.add_argument("--source-db-host")
+    parser.add_argument("--source-db-port")
+    parser.add_argument("--source-grid-build-version")
+    parser.add_argument(
+        "--source-forest-build-version",
+        default=getattr(settings, "SPORAMETEO_FOREST_BUILD_VERSION", ""),
+    )
+    parser.add_argument(
+        "--source-terrain-build-version",
+        default=getattr(settings, "SPORAMETEO_TERRAIN_BUILD_VERSION", ""),
+    )
 
 
 def _configure_source_alias(

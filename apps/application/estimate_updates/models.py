@@ -193,7 +193,7 @@ class HostTreeCache(models.Model):
 
 
 class TuscanyInputSet(models.Model):
-    """Record which source versions were verified for Tuscany and how many values were stored."""
+    """Record which source versions were verified for one region and how many values were stored."""
 
     region_code = models.CharField(max_length=20)
     grid_build_version = models.CharField(max_length=120)
@@ -209,7 +209,7 @@ class TuscanyInputSet(models.Model):
         constraints = [
             models.UniqueConstraint(
                 fields=[
-                    "grid_build_version", "forest_build_version",
+                    "region_code", "grid_build_version", "forest_build_version",
                     "terrain_build_version", "host_tree_source_version",
                 ],
                 name="tuscany_input_set_versions_unique",
