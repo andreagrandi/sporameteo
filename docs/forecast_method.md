@@ -81,6 +81,19 @@ Limits of the source:
 `reports/water_store_v5.md` compares v4 and v5 at 11 places, using finds only
 to check the change. No find set the number.
 
+## A cold rule tested and not adopted
+
+#172 tested a second temperature factor for mild, wet winters. It multiplied
+the v5 temperature factor by `exp(-0.10455 * (t20 - 13.7)^2)` when the mean
+temperature of the 20 days before the target, at the square, was below 13.7
+deg C. The numbers are those of the Bielefeld preprint, table S1, which v2
+also used.
+
+The rule kept every winter low, but it cut the autumn finds of Sila, Nebrodi
+and Val di Fiemme by up to 45 points. v5 therefore stays the current method.
+`reports/mild_winters_cold_rule.md` gives the results. The rule exists only in
+`experiments/method_outside_tuscany/run.py`.
+
 ## Host trees in v3
 
 JRC provides modelled relative occurrence for individual trees on a 1 km grid.

@@ -92,6 +92,12 @@ dispatch fails, the task keeps its failure reason and a later callback or
 worker startup recovery reserves it again. Startup recovery also returns
 interrupted running tasks to waiting without making a weather request.
 
+Each task records the method and tree source it was queued with. A deploy that
+changes either leaves old tasks in the queue. The worker and startup recovery
+close each of them as failed, with the reason that a newer method replaced it,
+and raise no error. Startup recovery then queues tasks with the new method for
+the two newest weather days of each cell.
+
 ## Local benchmark
 
 Run the benchmark only against a disposable PostgreSQL database whose name

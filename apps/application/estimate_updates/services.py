@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import uuid
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
@@ -64,6 +65,9 @@ DEFAULT_BATCH_SIZE = 1_000
 STALE_ESTIMATE_TASK_AGE = timedelta(minutes=30)
 TERRAIN_BUILD_SETTING = "SPORAMETEO_TERRAIN_BUILD_VERSION"
 FOREST_BUILD_SETTING = "SPORAMETEO_FOREST_BUILD_VERSION"
+REPLACED_TASK_REASON = "Replaced: the method or tree source changed after this task was queued."
+
+logger = logging.getLogger(__name__)
 
 
 class EstimateUpdateError(RuntimeError):
@@ -902,8 +906,26 @@ def enqueue_estimate_update(
     return task_row
 
 
-def process_estimate_task(*, task_id: uuid.UUID | str) -> PublishedEstimate:
-    """Run one durable estimate task without making weather requests."""
+def _is_replaced(*, task_row: EstimateTask) -> bool:
+    return bool(task_row.calculation_version) and task_row.calculation_version != calculation_version()
+
+
+def _close_replaced_task(*, task_row: EstimateTask) -> None:
+    # A deploy that changes the method leaves tasks of the old method in the queue.
+    # They must not publish, and closing them is routine, so nothing is raised.
+    task_row.state = EstimateTask.State.FAILED
+    task_row.task_id = None
+    task_row.queue_token = None
+    task_row.failure_reason = REPLACED_TASK_REASON
+    task_row.ended_at = timezone.now()
+    task_row.save(update_fields=["state", "task_id", "queue_token", "failure_reason", "ended_at", "updated_at"])
+    logger.info("Closed estimate task %s queued with an older method or tree source.", task_row.id)
+
+
+def process_estimate_task(*, task_id: uuid.UUID | str) -> PublishedEstimate | None:
+    """Run one durable estimate task without making weather requests.
+
+    A task queued with an older method or tree source is closed and returns None."""
     parsed_task_id = uuid.UUID(str(task_id))
     with transaction.atomic():
         task_row = EstimateTask.objects.select_for_update().get(id=parsed_task_id)
@@ -914,13 +936,14 @@ def process_estimate_task(*, task_id: uuid.UUID | str) -> PublishedEstimate:
             return PublishedEstimate(update=update, created=False)
         if task_row.state == EstimateTask.State.RUNNING:
             raise EstimateUpdateError("The estimate task is already running.")
+        if _is_replaced(task_row=task_row):
+            _close_replaced_task(task_row=task_row)
+            return None
         task_row.state = EstimateTask.State.RUNNING
         task_row.attempt_count += 1
         task_row.started_at = timezone.now()
         task_row.save(update_fields=["state", "attempt_count", "started_at", "updated_at"])
     try:
-        if task_row.calculation_version and task_row.calculation_version != calculation_version():
-            raise EstimateUpdateError("Tree source or method changed after this task was queued.")
         published = calculate_and_publish_estimates(
             snapshot_id=task_row.snapshot_id,
             cell_key=task_row.cell_key,
@@ -988,6 +1011,9 @@ def recover_estimate_tasks() -> int:
                 and task_row.started_at > timezone.now() - STALE_ESTIMATE_TASK_AGE
             )
             if backend_status == "RUNNING" and running_recently:
+                continue
+            if _is_replaced(task_row=task_row):
+                _close_replaced_task(task_row=task_row)
                 continue
             if backend_status == "READY":
                 if task_row.state == EstimateTask.State.RUNNING:
