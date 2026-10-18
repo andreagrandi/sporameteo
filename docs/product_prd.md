@@ -8,7 +8,7 @@ These product requirements follow the completed ten-question interview. This doc
 
 SporaMeteo helps people choose areas to explore for porcini. It combines terrain, habitat and weather information in a map that shows the estimated probability that porcini are growing in an area on a selected day.
 
-The first release is a free website without advertising or subscriptions. It works on phones and desktop computers, covers Tuscany at launch under D22, and supports Italian and English. All Italy remains the coverage goal. It shows today and the next seven days.
+The first release is a free website without advertising or subscriptions. It works on phones and desktop computers, covers all 20 Italian regions under D24, and supports Italian and English. It shows today and the next seven days.
 
 The app is an outdoor companion. The owner accepts experimental probability estimates at launch. They must carry a clear explanation that their accuracy has not been validated. The product must not promise exact mushroom locations or a successful outing. Launch does not depend on the owner visiting locations, recording finds or checking predictions in the field.
 
@@ -18,14 +18,14 @@ A polished interface is a launch requirement. A small feature set does not justi
 
 Epic 1 investigated technical possibilities. Its experiments and reports supply evidence, reusable work and known limits. They do not select the app's features. This PRD takes precedence over their suggestions about the first public release.
 
-In particular, the interview set all Italy as the MVP coverage rather than the investigation's home area. D22 later limited the first version to Tuscany. It presents experimental growing-probability estimates. Validation against field observations is not a release condition. The historical reports and their results remain unchanged.
+In particular, the interview set all Italy as the MVP coverage rather than the investigation's home area. D22 later limited the first version to Tuscany, and D24 brought it back to all 20 regions. It presents experimental growing-probability estimates. Validation against field observations is not a release condition. The historical reports and their results remain unchanged.
 
-Decisions D15 to D22 in [decisions.md](decisions.md) were made after this interview and replace the matching parts of this document. D22 limits the first version to Tuscany, and other regions come later. Weather is prepared by a scheduled background run and stored, as D15 now states. Weather cells are 0.1 degrees. Only squares with at least 10 percent forest get estimates. D21 authorizes 30 days of weather history, replacing D18's 21-day limit. Method v4 uses reconstructed past weather for completed days and forecasts for today and the next seven days. Habitat and current conditions stay internal to one public score. The zoomed-out map shows only forests. Estimates are stored compactly and only the current and previous assessment dates are kept.
+Decisions D15 to D24 in [decisions.md](decisions.md) were made after this interview and replace the matching parts of this document. D24 covers all 20 Italian regions and replaces the Tuscany-only first version of D22. Weather is prepared by a scheduled background run and stored, as D15 now states. Weather cells are 0.1 degrees. Only squares with at least 10 percent forest get estimates. D21 authorizes 30 days of weather history, replacing D18's 21-day limit. Method v4 uses reconstructed past weather for completed days and forecasts for today and the next seven days. Habitat and current conditions stay internal to one public score. The zoomed-out map shows only forests. Estimates are stored compactly and only the current and previous assessment dates are kept.
 
 | Interview decision | Agreed requirement |
 |---|---|
 | Meaning of the percentage | The estimated chance that porcini are growing in the selected area on the selected day. |
-| Geographic coverage | At least all Italy at launch. D22 replaces this with Tuscany at launch and other regions later. Further countries have no launch commitment. |
+| Geographic coverage | All Italy. D24 covers all 20 Italian regions, after D22 had limited the launch to Tuscany. Further countries have no launch commitment. |
 | Dates | Today and the following seven days, giving eight selectable dates. |
 | Languages | Italian and English. |
 | Access and funding | Free, without advertising or subscriptions. |
@@ -57,7 +57,7 @@ Feature IDs match the [competitor and feature comparison](../reports/Porcini%20a
 | ID | Required behavior in the MVP |
 |---|---|
 | F01 | Show an experimental percentage for the chance that porcini are growing in the selected map area on the selected day. |
-| F02 | Support all Italy, including Sicily and Sardinia. Under D22 the first version supports Tuscany and says that other regions are coming soon. Show missing data explicitly wherever an estimate cannot be produced. |
+| F02 | Support all Italy, including Sicily and Sardinia. Under D24 the map serves all 20 regions. Show missing data explicitly wherever an estimate cannot be produced. |
 | F04 | Show estimates for today. |
 | F05 | Show estimates for each of the next seven days. |
 | F11 | Explain the weather and habitat facts that contributed to the displayed estimate. |
@@ -202,7 +202,7 @@ The implementation tickets must turn these requirements into concrete checks aga
 | Area | Required evidence before local MVP acceptance |
 |---|---|
 | Complete journey | A visitor can search, select an area and date, read its estimate and explanation, save and reopen a favorite, and open navigation on phone and desktop. |
-| Coverage | Under D22 the published run covers every forest square of Tuscany. Places outside Tuscany show a stated reason and no percentage. The landing page says that other regions are coming soon. National checks of the Alps, Apennines, Sicily and Sardinia belong to the later all-Italy version. |
+| Coverage | Under D24 the published runs cover every forest square of the 20 Italian regions, one run per region. A place with no published estimate shows a stated reason and no percentage. #156 checked the estimate method at 10 places outside Tuscany. |
 | Dates | All eight dates use Europe/Rome correctly, including date rollover and daylight-saving changes. Weather and percentages refer to the selected date. |
 | Calculation | Real inputs produce repeatable estimates. Invalid or missing inputs cannot create made-up percentages. The calculation and method version are recorded. |
 | Experimental status | The legend and area details explain that probability accuracy has not been validated. No screen claims validated accuracy or guaranteed finds. |
