@@ -1,4 +1,4 @@
-"""Method outside Tuscany: the daily v4 and v5 estimates at 11 forest places, from the Open-Meteo files alone.
+"""Method outside Tuscany: the daily v5 and the cold candidate estimates at 11 forest places, from the Open-Meteo files alone.
 
 The script reads public Open-Meteo files and the local database read-only. It calls no weather API and writes nothing to the database.
 """
@@ -12,7 +12,7 @@ import time
 import urllib.parse
 import urllib.request
 from collections import Counter, defaultdict
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -57,11 +57,13 @@ PLACE_COLUMNS = [
 FIND_COLUMNS = (
     "place",
     "find_date",
-    "estimate_median_v4",
     "estimate_median_v5",
-    "factor_retained_water_v4",
+    "estimate_median_cold",
     "factor_retained_water_v5",
-    "factor_temperature",
+    "factor_retained_water_cold",
+    "factor_temperature_7_days_v5",
+    "factor_temperature_7_days_cold",
+    "factor_mean_temperature_20_days_cold",
     "rain_mm_on_the_day",
     "rain_mm_in_the_30_days_before",
 )
@@ -90,7 +92,8 @@ def start_django() -> None:
     from national_grid.models import GridBuildCell
     from national_terrain.models import TerrainCell
     from sporameteo import host_trees
-    from sporameteo.forecast_method import METHOD_V4, METHOD_V5, calculate_forecast
+    from sporameteo.moisture_method import _moisture, _score, temperature_response
+    from sporameteo.forecast_method import METHOD_V2, METHOD_V5, calculate_forecast
     from sporameteo.weather.policy import PIPELINE_VERSION
     from weather_requests.eligibility import weather_cell
     from weather_summaries import services as summary_services
@@ -108,8 +111,11 @@ def start_django() -> None:
     db.GridBuildCell = GridBuildCell
     db.TerrainCell = TerrainCell
     db.host_trees = host_trees
-    db.METHOD_V4 = METHOD_V4
     db.METHOD_V5 = METHOD_V5
+    db.METHOD_V2 = METHOD_V2
+    db._moisture = _moisture
+    db._score = _score
+    db.temperature_response = temperature_response
     db.calculate_forecast = calculate_forecast
     db.PIPELINE_VERSION = PIPELINE_VERSION
     db.weather_cell = weather_cell
@@ -584,6 +590,25 @@ def load_finds(*, settings: dict[str, Any], finds_dir: Path, context: RunContext
 # ---------------------------------------------------------------------------
 
 
+def cold_candidate(*, forecast_inputs: Any) -> tuple[int, float]:
+    """Return the v5 score and the cold factor of the mean temperature of the 20 days before the target.
+
+    The temperature factor of v5 is multiplied by the cold factor, and everything else stays as in v5.
+    """
+    method = db.METHOD_V5
+    adjustment = method.temperature_lapse_rate_c_per_m * (forecast_inputs.square_altitude.value - forecast_inputs.reference_altitude.value)
+    days = tuple(replace(day, temperature_c=day.temperature_c - adjustment) for day in forecast_inputs.daily_weather)
+    temperatures = [day.temperature_c for day in days]
+    week = sum(db.temperature_response(temperature_c=value) for value in temperatures[-7:]) / 7
+    # Bielefeld B. edulis preprint, table S1: the 20-day mean temperature has a quadratic cold penalty,
+    # so a warm last week cannot hide a cold fortnight before it. Peak and curvature are those of v2.
+    mean_20 = sum(temperatures[-20:]) / 20
+    peak, curvature = db.METHOD_V2.temperature_peak_c, db.METHOD_V2.cold_curve_coefficient
+    cold = math.exp(-curvature * (mean_20 - peak) ** 2) if mean_20 < peak else 1.0
+    moisture = db._moisture(days=days, initial_mm=40.0, maximum_drying_mm=method.maximum_drying_mm)[0]
+    return db._score(moisture=moisture, temperature=week * cold), cold
+
+
 def estimate_place(
     *,
     place: dict[str, Any],
@@ -593,7 +618,7 @@ def estimate_place(
     terrain_id: Any,
     target_days: list[date],
 ) -> list[dict[str, Any]]:
-    """Calculate the v4 and v5 estimates of every square for every target day, as on that day with zero days ahead."""
+    """Calculate the v5 and the cold candidate estimates of every square for every target day, as on that day with zero days ahead."""
     results: list[dict[str, Any]] = []
     for day in target_days:
         snapshot = db.WeatherSnapshot(
@@ -601,10 +626,10 @@ def estimate_place(
         )
         known = {key: row for key, row in rows.items() if key <= day}
         summary = db.summary_services._make_summary(snapshot=snapshot, assessment_date=day, target_date=day, rows=known)
-        percentages: list[int] = []
         percentages_v5: list[int] = []
-        factors: dict[str, list[float]] = defaultdict(list)
+        percentages_cold: list[int] = []
         factors_v5: dict[str, list[float]] = defaultdict(list)
+        factors_cold: dict[str, list[float]] = defaultdict(list)
         for forest_cell, terrain_cell, host_trees in inputs:
             forecast_inputs = db.estimate_services._forecast_inputs(
                 snapshot=snapshot,
@@ -615,24 +640,26 @@ def estimate_place(
                 daily_rows=known,
                 host_trees=host_trees,
             )
-            for method, kept_percentages, kept_factors in (
-                (db.METHOD_V4, percentages, factors),
-                (db.METHOD_V5, percentages_v5, factors_v5),
-            ):
-                forecast = db.calculate_forecast(inputs=forecast_inputs, method=method)
-                if forecast.whole_percentage is not None:
-                    kept_percentages.append(forecast.whole_percentage)
-                # v4 and v5 show host trees as facts but leave them out of the score, so only scored factors are kept.
-                for fact in forecast.ordered_facts:
-                    if fact.normalized_factor is not None:
-                        kept_factors[fact.role_key].append(fact.normalized_factor)
+            forecast = db.calculate_forecast(inputs=forecast_inputs, method=db.METHOD_V5)
+            if forecast.whole_percentage is None:
+                continue
+            percentages_v5.append(forecast.whole_percentage)
+            cold_score, cold = cold_candidate(forecast_inputs=forecast_inputs)
+            percentages_cold.append(cold_score)
+            # v5 shows host trees as facts but leaves them out of the score, so only scored factors are kept.
+            for fact in forecast.ordered_facts:
+                if fact.normalized_factor is not None:
+                    factors_v5[fact.role_key].append(fact.normalized_factor)
+                    factors_cold[fact.role_key].append(fact.normalized_factor)
+                    if fact.role_key == "corrected_mean_temperature":
+                        factors_cold["mean_temperature_20_days"].append(cold)
         results.append(
             {
                 "date": day,
-                "percentages": percentages,
                 "percentages_v5": percentages_v5,
-                "factors": {role: float(median(values)) for role, values in factors.items()},
+                "percentages_cold": percentages_cold,
                 "factors_v5": {role: float(median(values)) for role, values in factors_v5.items()},
+                "factors_cold": {role: float(median(values)) for role, values in factors_cold.items()},
             }
         )
     return results
@@ -720,7 +747,8 @@ def run(context: RunContext) -> None:
     place_rows: list[dict[str, Any]] = []
     day_rows: list[dict[str, Any]] = []
     month_rows: list[dict[str, Any]] = []
-    roles: list[str] = []
+    roles_v5: list[str] = []
+    roles_cold: list[str] = []
     per_place_days: dict[str, list[dict[str, Any]]] = {}
     per_place_rows: dict[str, dict[date, Any]] = {}
     phase = time.monotonic()
@@ -736,11 +764,14 @@ def run(context: RunContext) -> None:
         )
         print(f"{place['name']}: {len(target_days)} days estimated in {time.monotonic() - place_started:.0f} s", flush=True)
         for result in results:
-            for role in result["factors"]:
-                if role not in roles:
-                    roles.append(role)
+            for role in result["factors_v5"]:
+                if role not in roles_v5:
+                    roles_v5.append(role)
+            for role in result["factors_cold"]:
+                if role not in roles_cold:
+                    roles_cold.append(role)
         incomplete_weather = [day for day in target_days if not is_complete(row=rows[day])]
-        no_estimate = [result["date"] for result in results if not result["percentages"]]
+        no_estimate = [result["date"] for result in results if not result["percentages_cold"]]
         description = describe_squares(inputs=place_inputs[place["name"]])
         place_rows.append(
             {
@@ -766,23 +797,23 @@ def run(context: RunContext) -> None:
         days: list[dict[str, Any]] = []
         for result in results:
             row = rows[result["date"]]
-            values = result["percentages"]
             values_v5 = result["percentages_v5"]
+            values_cold = result["percentages_cold"]
+            if len(values_v5) != len(values_cold):
+                raise RuntimeError(f"v5 and the cold candidate estimate a different number of squares at {place['name']} on {result['date']}.")
             days.append(
                 {
                     "place": place["name"],
                     "date": result["date"].isoformat(),
-                    "squares_with_estimate": len(values),
-                    "estimate_median": rounded(float(np.median(values)), 1) if values else "",
-                    "estimate_p90": rounded(float(np.percentile(values, 90)), 1) if values else "",
-                    "estimate_max": max(values) if values else "",
+                    "squares_with_estimate": len(values_cold),
                     "estimate_median_v5": rounded(float(np.median(values_v5)), 1) if values_v5 else "",
                     "estimate_p90_v5": rounded(float(np.percentile(values_v5, 90)), 1) if values_v5 else "",
                     "estimate_max_v5": max(values_v5) if values_v5 else "",
-                    "factor_retained_water_v5": rounded(result["factors_v5"].get("retained_water"), 3),
-                    "_factors": result["factors"],
+                    "estimate_median_cold": rounded(float(np.median(values_cold)), 1) if values_cold else "",
+                    "estimate_p90_cold": rounded(float(np.percentile(values_cold, 90)), 1) if values_cold else "",
+                    "estimate_max_cold": max(values_cold) if values_cold else "",
                     "_factors_v5": result["factors_v5"],
-                    "_values_v5": values_v5,
+                    "_factors_cold": result["factors_cold"],
                     "mean_temperature_c": rounded(row.mean_temperature_c),
                     "min_temperature_c": rounded(row.min_temperature_c),
                     "rain_mm": rounded(row.rain_mm),
@@ -823,11 +854,13 @@ def run(context: RunContext) -> None:
                 {
                     "place": place["name"],
                     "find_date": found_on,
-                    "estimate_median_v4": day["estimate_median"],
                     "estimate_median_v5": day["estimate_median_v5"],
-                    "factor_retained_water_v4": rounded(day["_factors"].get("retained_water"), 3),
+                    "estimate_median_cold": day["estimate_median_cold"],
                     "factor_retained_water_v5": rounded(day["_factors_v5"].get("retained_water"), 3),
-                    "factor_temperature": rounded(day["_factors"].get("corrected_mean_temperature"), 3),
+                    "factor_retained_water_cold": rounded(day["_factors_cold"].get("retained_water"), 3),
+                    "factor_temperature_7_days_v5": rounded(day["_factors_v5"].get("corrected_mean_temperature"), 3),
+                    "factor_temperature_7_days_cold": rounded(day["_factors_cold"].get("corrected_mean_temperature"), 3),
+                    "factor_mean_temperature_20_days_cold": rounded(day["_factors_cold"].get("mean_temperature_20_days"), 3),
                     "rain_mm_on_the_day": day["rain_mm"],
                     "rain_mm_in_the_30_days_before": rounded(sum(value for value in before if value is not None), 1) if len(before) == 30 else "",
                 }
@@ -835,10 +868,16 @@ def run(context: RunContext) -> None:
         grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for day in per_place_days[place["name"]]:
             grouped[day["date"][:7]].append(day)
-            day_rows.append({**{k: v for k, v in day.items() if not k.startswith("_")}, **{f"factor_{role}": rounded(day["_factors"].get(role), 3) for role in roles}})
+            day_rows.append(
+                {
+                    **{k: v for k, v in day.items() if not k.startswith("_")},
+                    **{f"factor_{role}_v5": rounded(day["_factors_v5"].get(role), 3) for role in roles_v5},
+                    **{f"factor_{role}_cold": rounded(day["_factors_cold"].get(role), 3) for role in roles_cold},
+                }
+            )
         for label, days in grouped.items():
-            medians = [day["estimate_median"] for day in days if day["estimate_median"] != ""]
             medians_v5 = [day["estimate_median_v5"] for day in days if day["estimate_median_v5"] != ""]
+            medians_cold = [day["estimate_median_cold"] for day in days if day["estimate_median_cold"] != ""]
             temperatures = [day["mean_temperature_c"] for day in days if day["mean_temperature_c"] != ""]
             minimums = [day["min_temperature_c"] for day in days if day["min_temperature_c"] != ""]
             rain = [day["rain_mm"] for day in days if day["rain_mm"] != ""]
@@ -847,13 +886,13 @@ def run(context: RunContext) -> None:
                     "place": place["name"],
                     "month": label,
                     "days": len(days),
-                    "days_with_estimate": len(medians),
-                    "mean_daily_median_estimate": rounded(sum(medians) / len(medians), 1) if medians else "",
-                    "days_median_50_or_more": sum(1 for value in medians if value >= 50),
-                    "days_median_30_or_more": sum(1 for value in medians if value >= 30),
+                    "days_with_estimate": len(medians_cold),
                     "mean_daily_median_estimate_v5": rounded(sum(medians_v5) / len(medians_v5), 1) if medians_v5 else "",
                     "days_median_50_or_more_v5": sum(1 for value in medians_v5 if value >= 50),
                     "days_median_30_or_more_v5": sum(1 for value in medians_v5 if value >= 30),
+                    "mean_daily_median_estimate_cold": rounded(sum(medians_cold) / len(medians_cold), 1) if medians_cold else "",
+                    "days_median_50_or_more_cold": sum(1 for value in medians_cold if value >= 50),
+                    "days_median_30_or_more_cold": sum(1 for value in medians_cold if value >= 30),
                     "mean_temperature_c": rounded(sum(temperatures) / len(temperatures), 1) if temperatures else "",
                     "frost_days": sum(1 for value in minimums if value < 0),
                     "rain_mm": rounded(sum(rain), 0) if rain else "",
@@ -865,19 +904,19 @@ def run(context: RunContext) -> None:
         "place",
         "date",
         "squares_with_estimate",
-        "estimate_median",
-        "estimate_p90",
-        "estimate_max",
         "estimate_median_v5",
         "estimate_p90_v5",
         "estimate_max_v5",
-        *[f"factor_{role}" for role in roles],
+        "estimate_median_cold",
+        "estimate_p90_cold",
+        "estimate_max_cold",
+        *[f"factor_{role}_v5" for role in roles_v5],
+        *[f"factor_{role}_cold" for role in roles_cold],
         "mean_temperature_c",
         "min_temperature_c",
         "rain_mm",
         "soil_moisture",
     ]
-    day_columns.insert(day_columns.index("mean_temperature_c"), "factor_retained_water_v5")
     month_columns = list(month_rows[0])
     find_path = REPORTS_DIR / "method_outside_tuscany_find_days.csv"
     write_csv(rows=find_rows, columns=list(FIND_COLUMNS), path=find_path)

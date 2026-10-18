@@ -77,9 +77,10 @@ Pistoia cell was read again from the Open-Meteo files, with 810 requests and
 1.35 MB in 35 seconds. No Open-Meteo API call was made and nothing was written
 to the database.
 
-Every find day is in `reports/method_outside_tuscany_find_days.csv`. The v5
-columns are next to the v4 ones in `reports/method_outside_tuscany_days.csv`
-and `reports/method_outside_tuscany_months.csv`.
+Every find day was in `reports/method_outside_tuscany_find_days.csv`, with
+the v5 columns next to the v4 ones in `reports/method_outside_tuscany_days.csv`
+and `reports/method_outside_tuscany_months.csv`. The #172 rerun replaced the
+v4 columns. The files of this report are those of commit d896d82.
 
 ## AC2 and AC3: scores on the days of nearby finds
 
@@ -149,7 +150,7 @@ March rises with v5, because evapotranspiration there is above 1 mm a day:
 The Pistoia March days at 50 or more had daily means of 9.4 to 11 deg C. v4
 already scored them 42 to 61. The temperature rule gives 8 to 10 deg C days
 a factor of 0.4 to 0.7, which the #156 report flagged as the second rule to
-change. Issue #174 covers that change.
+change. Issue #172 tested that change, see `reports/mild_winters_cold_rule.md`.
 
 Pistoia rises in season too. April goes from 0 to 11 days at 50 or more,
 June from 7 to 17 and September from 8 to 18. There are 4 finds near Pistoia
