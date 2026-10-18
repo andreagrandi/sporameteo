@@ -297,7 +297,7 @@ run takes about 850 times 1.38, about 20 minutes.
 
 ### Check after the load
 
-Two checks follow. The first covers all of Italy. The dry run checks that
+Three checks follow. The first covers all of Italy. The dry run checks that
 every square of the 20 regions has a grid membership, forest and terrain
 values, and host tree values for every forest square:
 
@@ -311,7 +311,43 @@ sudo dokku run --no-tty sporameteo python apps/application/manage.py \
 All 20 regions must report `ready`, with 1,217,473 squares and 717,104 forest
 squares in the totals.
 
-The second check covers Tuscany, which the site serves today. Its data and its
+The dry run only checks that the values exist. The second check compares
+them with the national database. `tools/region_load/region_values_check.sql`
+prints one line per region with the region code, name and a fingerprint of
+its outline, the number of squares, and fingerprints of the square, forest and
+terrain values. Row ids and timestamps are left out, because the copy gives
+them new values. On the laptop, run it on the national builds:
+
+```sh
+(printf '%s\n' "\\set grid 'italy-500m-istat-2026-01-01-v1'" \
+  "\\set forest 'italy-forest-copernicus-2018-v1'" \
+  "\\set terrain 'italy-terrain-glo30-2021-v2'"; \
+  cat tools/region_load/region_values_check.sql) \
+  | docker compose exec -T database psql -U sporameteo -d sporameteo_native \
+  > region_values_national.txt
+```
+
+Then run it on the copied builds in production and compare the two files:
+
+```sh
+(printf '%s\n' "\\set grid 'regions-all-grid-italy-500m-istat-2026-01-01-v1'" \
+  "\\set forest 'regions-all-forest-italy-forest-copernicus-2018-v1'" \
+  "\\set terrain 'regions-all-terrain-italy-terrain-glo30-2021-v2'"; \
+  cat tools/region_load/region_values_check.sql) \
+  | ssh deploy@vps.sporameteo.com "sudo dokku postgres:connect sporameteo-db" \
+  > region_values_production.txt
+diff region_values_national.txt region_values_production.txt
+```
+
+The diff must be empty, and each file must have 20 lines. A line that
+differs names the region whose values changed in the copy.
+
+On the laptop, the check took 13 seconds on `sporameteo_native` and 15
+seconds on a local copy of the loaded database. The two printed the same 20
+lines. A changed forest share of one Molise square in a scratch copy changed
+only the forest fingerprint of the Molise line.
+
+The third check covers Tuscany, which the site serves today. Its data and its
 published run must not change:
 
 ```sh
