@@ -7,9 +7,11 @@ date. The percentage is an experimental, unvalidated estimate. It is not a
 measured probability and it is not a chance that a visitor will find a
 mushroom.
 
-New estimate updates use `porcini-experimental-v5`, described in the next two
-sections. The code keeps v1 to v4 so saved updates retain their original
-percentages and explanations. The sections after them describe v1 to v3.
+New estimate updates use `porcini-experimental-v5`. The Version 4 section
+holds the base rules, and the Version 5 section holds the one drying rule that
+v5 changes. The code keeps v1 to v4 so saved updates retain their original
+percentages and explanations. The sections after them describe versions 1 to 3
+for saved updates.
 
 The event is visible fruiting bodies from the four-species porcini group,
 *Boletus edulis*, *B. aereus*, *B. reticulatus* and *B. pinophilus*, somewhere
@@ -21,7 +23,9 @@ in the selected 500 m square on the Italian local target date. The event key is
 v4 reads the 30 days before the target date. Each day has rain, mean air
 temperature and reference evapotranspiration, which is the water a short,
 well watered grass would lose to the air that day. The temperature is moved to
-the height of the square at 0.65 deg C per 100 m.
+the height of the square at 0.65 deg C per 100 m, which is 0.0065 deg C per
+metre in code. The lapse rate is the Open-Meteo elevation adjustment
+assumption.
 
 ```text
 water starts at 40 mm on the first of the 30 days
@@ -35,14 +39,30 @@ whole_percentage = ROUND_HALF_UP(5 + 90 * moisture * temperature)
 
 The band score is 0 at 0 deg C, 0.1 at 5 deg C, 0.4 at 8 deg C, 1 from 12 to
 18 deg C, 0.7 at 22 deg C, 0.3 at 25 deg C and 0 at 30 deg C, with straight
-lines between them. Squares with less than a tenth of forest get no estimate,
-as decision D17 requires. Host trees are shown but do not change the score.
+lines between them and 0 outside 0 to 30 deg C.
+
+Squares with less than a tenth of forest get no estimate, as decision D17
+requires. Host trees are shown but do not change the score.
 
 The temperature bands follow the owner's document named in decision D21. The
 other numbers are project choices recorded in
 `reports/mvp/pistoia_formula_reassessment.md`: the 40 mm start, the 95
 percent kept each day, the 25 mm daily limit, the 80 mm maximum, the half of
-the evapotranspiration and the 40 mm full level.
+the evapotranspiration, the 40 mm full level and the display bounds 5 through
+95.
+
+Version 4 has no frost rule, no season rule and no altitude limit, and the
+host values shown carry no multiplier.
+
+For a current estimate, `_calculate_v4` reads 30 daily records with `rain_mm`,
+`temperature_c` and `et0_mm` for target minus 30 through target minus 1, plus
+`reference_altitude`, `square_altitude`, `forest_share` and
+`daily_weather_source_id`. It records the facts `rain_30_days`,
+`retained_water`, `corrected_mean_temperature`, `forest_share` and the host
+group facts without a multiplier. It returns no estimate with the reason
+`forest_below_minimum`, `missing_forest_data`, `reference_altitude`,
+`square_altitude`, `weather_history`, `missing_rain_mm`,
+`missing_temperature_c` or `missing_et0_mm`.
 
 ## Version 5
 
@@ -231,7 +251,10 @@ the same as from `calculate_forecast`, without the facts. It is about 9 times
 faster on real cells, as `reports/italy_night_cost.md` records. The detail
 view still uses `calculate_forecast` for the facts.
 
-## Required input schema
+## Required input schema for versions 2 and 3
+
+The table and rules below describe saved version 2 and version 3 updates only.
+New estimates use the rules in the Version 4 section.
 
 All input periods are inclusive. A `None` record or a record whose `value` is
 `None` is missing. A daily temperature record is missing when any daily mean or
@@ -266,7 +289,11 @@ forest shares outside zero through one. It accepts finite low and high
 altitudes. It rejects temperatures without the canonical reference-altitude
 semantic, because it applies the altitude adjustment once itself.
 
-## Weather and forest formula shared with v2
+## Version 2 formula kept for history
+
+The formula and numbers below describe saved version 2 and version 3 updates
+only. New estimates use the water store and temperature bands in the Version 4
+section.
 
 ```text
 lapse = 0.0065 * (square_altitude - reference_altitude)
@@ -364,7 +391,10 @@ percent. The Piemonte timing and the Bielefeld counts both point to rain 8 to
 30 days before fruiting, which the older rain input covers. No source in the
 project supports a stronger effect for the last week.
 
-## Contributing facts
+## Contributing facts for versions 2 and 3
+
+The facts listed below describe saved version 2 and version 3 updates only.
+The Version 4 section lists the facts of a current estimate.
 
 `ordered_facts` contains known values even when another required input is
 missing. Each fact records the original value, unit, source identifier, source
@@ -390,7 +420,10 @@ when tree records exist. Group facts describe the source year, with zero
 weather-day counts. The multiplier fact always appears, including a disclosed
 fallback. The area API includes credit and resolution in `source_metadata`.
 
-## Missing results
+## Missing results for versions 2 and 3
+
+The reason keys below describe saved version 2 and version 3 updates only. The
+Version 4 section lists the reasons of a current estimate.
 
 | Condition | `whole_percentage` | `unavailable_reason` |
 | --- | --- | --- |
@@ -407,7 +440,10 @@ missing keys in the order of this table, with `forest_share` last. The first
 missing key is the unavailable reason unless the forest value is missing or
 below the minimum.
 
-## Worked examples
+## Worked examples for versions 2 and 3
+
+Every example below describes saved version 2 and version 3 updates only. The
+Version 4 section gives the rules of a current estimate.
 
 The tests in `tests/app/test_forecast_method.py` check every example below.
 
