@@ -1731,7 +1731,13 @@ body:has(.app) {
   .maptr {
     display: contents;
   }
+  /* The info button on the map already credits the map data, so the phone footer keeps one line. */
+  .attribution-map,
+  .attribution-sep {
+    display: none;
+  }
   .mapfoot {
+    min-height: 32px;
     font-size: 9px;
     padding: 0 var(--space-3);
   }
@@ -2392,6 +2398,7 @@ body:has(.app) ul {
     display: none;
   }
   .search {
+    background: transparent;
     flex: 1 1 auto;
     min-width: 0;
     order: 1;

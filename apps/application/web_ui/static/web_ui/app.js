@@ -3367,6 +3367,8 @@
           stateData.resizeObserver.observe(resizeTarget);
         }
         stateData.map.addControl(new window.maplibregl.AttributionControl({ compact: true, customAttribution: "OpenStreetMap contributors · OpenFreeMap" }), "bottom-right");
+        // MapLibre opens the compact credits on start. They stay closed until the info button opens them.
+        container.querySelector(".maplibregl-ctrl-attrib")?.classList.remove("maplibregl-compact-show");
         listen("style.load", restoreCustomLayers);
         listen("styledata", restoreCustomLayers);
         listenOnce("load", () => {
@@ -3408,7 +3410,10 @@
 
           const apiCredits = Array.isArray(body.attributions) ? body.attributions : [];
           if (apiCredits.length) {
-            attribution.append(document.createTextNode(" · "));
+            const separator = document.createElement("span");
+            separator.className = "attribution-sep";
+            separator.textContent = " · ";
+            attribution.append(separator);
             const details = document.createElement("details");
             details.className = "attribution-details";
             const summary = document.createElement("summary");
