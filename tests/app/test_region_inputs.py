@@ -177,7 +177,7 @@ def test_build_versions_come_from_the_arguments(two_regions, settings) -> None:
 
 def test_tuscany_command_keeps_one_region_and_its_input_set(tuscany, requests) -> None:
     out = io.StringIO()
-    call_command("prepare_tuscany_inputs", f"--terrain-cache-dir={tuscany['cache_dir']}", "--json", stdout=out)
+    call_command("prepare_region_inputs", "--regions=09", f"--terrain-cache-dir={tuscany['cache_dir']}", "--json", stdout=out)
     report = json.loads(out.getvalue())
     assert report["region_code"] == "09"
     assert [item["region_code"] for item in report["regions"]] == ["09"]

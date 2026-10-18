@@ -1,6 +1,6 @@
 # Weather updates
 
-The application stores weather by 0.1 degree weather cell and Italian assessment date. The assessment date uses `Europe/Rome`, so the date changes at Rome midnight on both daylight saving clock-change days. Weather is prepared ahead by a scheduled run, described below. The map, overview and details read the published Tuscany run and never start a provider request, as described in `docs/api.md`.
+The application stores weather by 0.1 degree weather cell and Italian assessment date. The assessment date uses `Europe/Rome`, so the date changes at Rome midnight on both daylight saving clock-change days. Weather is prepared ahead by a scheduled run, described below. The map, overview and details read the published run of each region and never start a provider request, as described in `docs/api.md`.
 
 The window of a snapshot is 38 dates: the 30 completed Italian days before the assessment date, the assessment date and the following seven dates. Completed days come from the historical source, `SPORAMETEO_WEATHER_HISTORY_ENDPOINT`, which defaults to the Open-Meteo archive. Today and the next seven days come from the forecast source. The planner asks for completed days in pieces of at most 13 days, so a full first load is pieces of 13, 13 and 4 days plus one forecast of 8 days. A normal night asks for yesterday plus one forecast of 8 days.
 
@@ -33,18 +33,18 @@ uv run python apps/application/manage.py weather_on_demand_status
 
 ## Scheduled weather refresh
 
-`refresh_tuscany_weather` prepares the 38-day window for every weather cell that holds a forest square of the nightly regions. The setting `SPORAMETEO_NIGHTLY_REGIONS` names them. It is `all` or a list of ISTAT region codes such as `09,08`, and it defaults to `09`, Tuscany. `--region-code` overrides it with the same format, and an unknown code stops the command with an error. A weather cell shared by several forest squares, or by two regions on a border, is counted and stored once. One `ScheduledWeatherRun` covers the whole set. Its `region_code` is `all`, or the sorted codes joined by commas, so a single region keeps the key `09`. The forest build comes from `SPORAMETEO_FOREST_BUILD_VERSION` unless `--forest-build-version` is given. The assessment date is today in Europe/Rome unless `--assessment-date` is given.
+`refresh_weather` prepares the 38-day window for every weather cell that holds a forest square of the nightly regions. The setting `SPORAMETEO_NIGHTLY_REGIONS` names them. It is `all` or a list of ISTAT region codes such as `09,08`, and it defaults to `09`, Tuscany. `--region-code` overrides it with the same format, and an unknown code stops the command with an error. A weather cell shared by several forest squares, or by two regions on a border, is counted and stored once. One `ScheduledWeatherRun` covers the whole set. Its `region_code` is `all`, or the sorted codes joined by commas, so a single region keeps the key `09`. The forest build comes from `SPORAMETEO_FOREST_BUILD_VERSION` unless `--forest-build-version` is given. The assessment date is today in Europe/Rome unless `--assessment-date` is given.
 
 Print the plan first. The dry run reads the database only. It writes nothing, makes no network call and prints the mode, the number of cells, the cells that are already ready for the date, the MB the run would read from the files, and the API calls left. The API calls left are the counted calls and HTTP requests of the open fallback batches of the run for that date, so they are 0 when no run or no fallback batch exists:
 
 ```sh
-uv run python apps/application/manage.py refresh_tuscany_weather --dry-run
+uv run python apps/application/manage.py refresh_weather --dry-run
 ```
 
 Start the run without `--dry-run`. The command stores a `ScheduledWeatherRun` for the region and date, queues one task and prints the run ID and status. It plans no API batches:
 
 ```sh
-uv run python apps/application/manage.py refresh_tuscany_weather
+uv run python apps/application/manage.py refresh_weather
 ```
 
 The run is in `initial` mode while no cell of the run has a ready snapshot for an earlier date, and in `refresh` mode afterwards.
@@ -64,7 +64,7 @@ A failed run never deletes or replaces stored rows or snapshots, so the last pub
 
 ## Weather from the Open-Meteo files
 
-`store_file_weather` stores the same 38 days of daily rows as the Tuscany refresh, but it reads the public Open-Meteo files in the `openmeteo.s3.amazonaws.com` bucket instead of calling the API. The nightly run uses it as its normal path. The command `store_file_weather` takes the same arguments as `refresh_tuscany_weather`: `--dry-run`, `--assessment-date`, `--region-code`, `--forest-build-version` and `--json`.
+`store_file_weather` stores the same 38 days of daily rows as the nightly refresh, but it reads the public Open-Meteo files in the `openmeteo.s3.amazonaws.com` bucket instead of calling the API. The nightly run uses it as its normal path. The command `store_file_weather` takes the same arguments as `refresh_weather`: `--dry-run`, `--assessment-date`, `--region-code`, `--forest-build-version` and `--json`.
 
 The dry run reads the database only. It makes no network call and writes nothing. It prints the number of weather cells, the cells that already have a snapshot for the date, the days to read, the number of chunk files and the estimated download in MB:
 
@@ -92,16 +92,16 @@ Every read leaves a `FileWeatherRead` record with the assessment date, the run t
 
 ## Nightly chain
 
-One cron entry starts the whole night. `refresh_tuscany_weather` runs at 00:30 UTC. The steps follow each other without more cron entries:
+One cron entry starts the whole night. `refresh_weather` runs at 00:30 UTC. The steps follow each other without more cron entries:
 
 1. The command creates the weather run and queues its task. The worker reads the files for all 38 days of every weather cell of the nightly regions, once for the whole set. When the read fails, it falls back to the API with `models=ecmwf_ifs` and records why.
 2. When the run reaches `completed`, the worker queues one forecast task for the same date. The run stores the task ID in `forecast_task_id`.
 3. The forecast task goes through the regions one after another. Each region gets its own forecast run, which is calculated and published on its own. A region that already has a published run for the date is skipped, so a retry only redoes what is missing.
-4. Publishing the run of Tuscany queues the map cache warm-up. The map serves only Tuscany until issue #155, so other regions queue no warm-up.
+4. Publishing the run of each region queues the map cache warm-up for that region. The warm-up builds the run summary and the overview points of that region, see `warm_published_map_cache` in `map_api/published.py`. The first request that needs them builds the square and result tiles.
 
 00:30 UTC is 01:30 in Rome in winter time and 02:30 in summer time, so it is always after midnight in Rome. It is also clear of the book corners jobs at 02:00 and 03:00 UTC. `cleanup_weather` keeps its own entry at 01:30 UTC. Both entries are in the `cron` list of `app.json`, and the VPS clock is UTC. The checks after the chain are described in the next section.
 
-A failed weather run queues no forecast. A failed region keeps its last published run and queues no warm-up, and the other regions still publish. The forecast task records the failure of each region, goes on with the next one, and raises at the end with the failed regions and their reasons, so its task row is marked failed. `run_tuscany_forecast --region-code <code>` for the same date runs one region again by hand. Running `refresh_tuscany_weather` again for the same date resumes the same run and queues no second forecast. If the forecast could not be queued before, for example because the queue was down, the next run of the command queues it and the run keeps the reason `forecast_queue_failure` until then.
+A failed weather run queues no forecast. A failed region keeps its last published run and queues no warm-up, and the other regions still publish. The forecast task records the failure of each region, goes on with the next one, and raises at the end with the failed regions and their reasons, so its task row is marked failed. `run_forecast --region-code <code>` for the same date runs one region again by hand. Running `refresh_weather` again for the same date resumes the same run and queues no second forecast. If the forecast could not be queued before, for example because the queue was down, the next run of the command queues it and the run keeps the reason `forecast_queue_failure` until then.
 
 The background worker must be running, for example `run_background_worker`, because the command only creates and queues the run.
 
@@ -119,7 +119,7 @@ The background worker must be running, for example `run_background_worker`, beca
 
 A retry does nothing when the run is published or a step is still working. Otherwise it repeats the step that stopped:
 
-- No weather run for the date: it starts `refresh_tuscany_weather` for the date. This happens when cron or the worker was down at 00:30.
+- No weather run for the date: it starts `refresh_weather` for the date. This happens when cron or the worker was down at 00:30.
 - Weather run pending or running: it calls the same start again, which queues the task again only if the task was lost.
 - Weather run failed: it reopens the failed batches of the run, if any, and resumes the run. A run without fallback batches reads the files again. Batches that already finished keep their snapshots and cost no new calls.
 - Forecast never queued, or forecast task failed: it queues a new forecast task and stores its ID in `forecast_task_id`. The task skips the regions that are published and reruns only the missing ones.

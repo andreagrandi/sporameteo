@@ -6,7 +6,7 @@
   },
   "cron": [
     {
-      "command": "python apps/application/manage.py refresh_tuscany_weather",
+      "command": "python apps/application/manage.py refresh_weather",
       "schedule": "30 0 * * *"
     },
     {

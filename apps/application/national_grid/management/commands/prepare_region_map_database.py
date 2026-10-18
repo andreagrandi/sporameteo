@@ -2,20 +2,24 @@
 
 from __future__ import annotations
 
+import copy
 import json
+import os
 from pathlib import Path
 from typing import Any
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
+from django.db import connections
 
-from national_grid.management.commands.prepare_tuscany_map_database import (
-    _configure_source_alias,
-    _latest_grid_version,
-    add_source_arguments,
-)
 from national_grid.models import GridBuild, GridRegion
-from national_grid.subset import SourceBuildError, TuscanySubsetError, prepare_region_subset
+from national_grid.subset import (
+    DEFAULT_SOURCE_ALIAS,
+    DEFAULT_TARGET_ALIAS,
+    SourceBuildError,
+    TuscanySubsetError,
+    prepare_region_subset,
+)
 
 
 MAX_VERSION_LENGTH = 120
@@ -128,3 +132,61 @@ def _parse_regions(*, value: str, alias: str, grid_version: str) -> tuple[list[s
             raise CommandError("The source grid build has no regions.")
         return all_codes, True
     return codes, sorted(codes) == all_codes
+
+
+def add_source_arguments(parser: Any) -> None:
+    """Add the options that choose the source database and its builds."""
+    parser.add_argument("--source-alias", default=DEFAULT_SOURCE_ALIAS)
+    parser.add_argument("--target-alias", default=DEFAULT_TARGET_ALIAS)
+    parser.add_argument("--source-db-name")
+    parser.add_argument("--source-db-user")
+    parser.add_argument("--source-db-password")
+    parser.add_argument("--source-db-host")
+    parser.add_argument("--source-db-port")
+    parser.add_argument("--source-grid-build-version")
+    parser.add_argument(
+        "--source-forest-build-version",
+        default=getattr(settings, "SPORAMETEO_FOREST_BUILD_VERSION", ""),
+    )
+    parser.add_argument(
+        "--source-terrain-build-version",
+        default=getattr(settings, "SPORAMETEO_TERRAIN_BUILD_VERSION", ""),
+    )
+
+
+def _configure_source_alias(
+    *,
+    source_alias: str,
+    target_alias: str,
+    name: str | None,
+    user: str | None,
+    password: str | None,
+    host: str | None,
+    port: str | None,
+) -> None:
+    if source_alias in connections.databases:
+        if not any(value is not None for value in (name, user, password, host, port)):
+            return
+        base = copy.deepcopy(connections.databases[source_alias])
+    else:
+        base = copy.deepcopy(connections.databases[target_alias])
+    base["NAME"] = name or os.getenv("SPORAMETEO_SOURCE_DB_NAME", "sporameteo")
+    base["USER"] = user or os.getenv("SPORAMETEO_SOURCE_DB_USER", base.get("USER"))
+    base["PASSWORD"] = password or os.getenv("SPORAMETEO_SOURCE_DB_PASSWORD", base.get("PASSWORD"))
+    base["HOST"] = host or os.getenv("SPORAMETEO_SOURCE_DB_HOST", base.get("HOST"))
+    base["PORT"] = port or os.getenv("SPORAMETEO_SOURCE_DB_PORT", base.get("PORT"))
+    connections.databases[source_alias] = base
+    connections[source_alias].close()
+
+
+def _latest_grid_version(*, alias: str) -> str:
+    version = (
+        GridBuild.objects.using(alias)
+        .filter(status=GridBuild.Status.COMPLETED)
+        .order_by("-completed_at", "-created_at")
+        .values_list("version", flat=True)
+        .first()
+    )
+    if version is None:
+        raise CommandError("The source database has no completed national grid build.")
+    return str(version)

@@ -16,8 +16,8 @@ class EstimateUpdatesConfig(AppConfig):
         )
 
         from .services import cleanup_estimate_updates, enqueue_estimate_update
-        from .tasks import queue_tuscany_forecast
+        from .tasks import queue_forecast
 
         configure_estimate_callback(enqueue_estimate_update)
         configure_cleanup_callback(cleanup_estimate_updates)
-        configure_forecast_callback(queue_tuscany_forecast)
+        configure_forecast_callback(queue_forecast)

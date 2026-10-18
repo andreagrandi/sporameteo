@@ -43,7 +43,7 @@ from estimate_updates.services import (
     cleanup_estimate_updates,
     publish_estimate_update,
 )
-from estimate_updates.tasks import tuscany_forecast_task
+from estimate_updates.tasks import forecast_task
 from sporameteo.finds.grid import format_cell_id
 from sporameteo.forecast_method import CURRENT_METHOD, HostTrees, calculate_forecast
 from sporameteo.weather.policy import PIPELINE_VERSION
@@ -696,8 +696,8 @@ def test_forecast_task_publishes_the_run_and_queues_one_warm_up_only_once(
     )
     _weather(day=DAY)
 
-    first = tuscany_forecast_task.call(region_code="09", assessment_date=DAY.isoformat())
-    second = tuscany_forecast_task.call(region_code="09", assessment_date=DAY.isoformat())
+    first = forecast_task.call(region_code="09", assessment_date=DAY.isoformat())
+    second = forecast_task.call(region_code="09", assessment_date=DAY.isoformat())
 
     assert first == second == ForecastRun.Status.PUBLISHED
     assert published_forecast_run(region_code="09").run.assessment_date == DAY
@@ -723,7 +723,7 @@ def test_a_failing_forecast_task_keeps_the_published_run_and_queues_no_warm_up(
     monkeypatch.setattr("estimate_updates.forecast_runs.calculate_estimate_update", broken)
 
     with pytest.raises(ForecastRunError, match="failed on purpose"):
-        tuscany_forecast_task.call(
+        forecast_task.call(
             region_code="09", assessment_date=(DAY + timedelta(days=1)).isoformat(),
         )
 
@@ -737,7 +737,7 @@ def test_the_forecast_callback_queues_the_task_with_an_iso_date(tuscany: SimpleN
     task_id = weather_services._FORECAST_CALLBACK(region_code="09", assessment_date=DAY)
 
     queued = DBTaskResult.objects.get(id=task_id)
-    assert queued.task_path == "estimate_updates.tasks.tuscany_forecast_task"
+    assert queued.task_path == "estimate_updates.tasks.forecast_task"
     assert queued.args_kwargs["kwargs"] == {"region_code": "09", "assessment_date": DAY.isoformat()}
 
 
@@ -843,7 +843,7 @@ def test_dry_run_command_prints_the_plan_and_writes_nothing(tuscany: SimpleNames
     _weather(day=DAY)
     out = io.StringIO()
 
-    call_command("run_tuscany_forecast", "--assessment-date", DAY.isoformat(), "--dry-run", stdout=out)
+    call_command("run_forecast", "--assessment-date", DAY.isoformat(), "--dry-run", stdout=out)
 
     text = out.getvalue()
     assert "no data written" in text
@@ -853,7 +853,7 @@ def test_dry_run_command_prints_the_plan_and_writes_nothing(tuscany: SimpleNames
     assert PublishedForecastRun.objects.count() == 0
 
     out = io.StringIO()
-    call_command("run_tuscany_forecast", "--assessment-date", DAY.isoformat(), "--dry-run", "--json", stdout=out)
+    call_command("run_forecast", "--assessment-date", DAY.isoformat(), "--dry-run", "--json", stdout=out)
     assert json.loads(out.getvalue())["cells_total"] == 2
 
 
@@ -861,7 +861,7 @@ def test_command_runs_and_publishes_then_reports_the_run(tuscany: SimpleNamespac
     _weather(day=DAY)
     out = io.StringIO()
 
-    call_command("run_tuscany_forecast", "--assessment-date", DAY.isoformat(), "--json", stdout=out)
+    call_command("run_forecast", "--assessment-date", DAY.isoformat(), "--json", stdout=out)
 
     report = json.loads(out.getvalue())
     run = ForecastRun.objects.get()
@@ -880,11 +880,11 @@ def test_command_rejects_unknown_regions_and_missing_weather(tuscany: SimpleName
     _weather(day=DAY)
 
     with pytest.raises(CommandError, match="not in grid build"):
-        call_command("run_tuscany_forecast", "--assessment-date", DAY.isoformat(), "--region-code", "99", "--dry-run")
+        call_command("run_forecast", "--assessment-date", DAY.isoformat(), "--region-code", "99", "--dry-run")
     with pytest.raises(CommandError, match="not in grid build"):
-        call_command("run_tuscany_forecast", "--assessment-date", DAY.isoformat(), "--region-code", "99")
+        call_command("run_forecast", "--assessment-date", DAY.isoformat(), "--region-code", "99")
     with pytest.raises(CommandError, match="no ready weather"):
-        call_command("run_tuscany_forecast", "--assessment-date", (DAY + timedelta(days=1)).isoformat())
+        call_command("run_forecast", "--assessment-date", (DAY + timedelta(days=1)).isoformat())
     assert ForecastRun.objects.count() == 0
 
 
@@ -906,7 +906,7 @@ def test_forecast_task_publishes_every_region_and_a_rerun_skips_them(
     calls = _count_warm_ups(monkeypatch=monkeypatch)
     _weather(day=DAY)
 
-    tuscany_forecast_task.call(region_code="12,09", assessment_date=DAY.isoformat())
+    forecast_task.call(region_code="12,09", assessment_date=DAY.isoformat())
 
     assert published_forecast_run(region_code="09").run.assessment_date == DAY
     assert published_forecast_run(region_code="12").run.assessment_date == DAY
@@ -917,7 +917,7 @@ def test_forecast_task_publishes_every_region_and_a_rerun_skips_them(
         raise AssertionError("A published region must be skipped.")
 
     monkeypatch.setattr("estimate_updates.forecast_runs.start_forecast_run", forbidden)
-    tuscany_forecast_task.call(region_code="09,12", assessment_date=DAY.isoformat())
+    forecast_task.call(region_code="09,12", assessment_date=DAY.isoformat())
 
     assert set(ForecastRun.objects.values_list("id", flat=True)) == run_ids
 
@@ -927,7 +927,7 @@ def test_a_failed_region_keeps_its_last_run_and_the_other_region_publishes(
 ) -> None:
     _count_warm_ups(monkeypatch=monkeypatch)
     _weather(day=DAY)
-    tuscany_forecast_task.call(region_code="09,12", assessment_date=DAY.isoformat())
+    forecast_task.call(region_code="09,12", assessment_date=DAY.isoformat())
     lazio_before = PublishedForecastRun.objects.get(region_code="12").current_run_id
     next_day = DAY + timedelta(days=1)
     _weather(day=next_day)
@@ -941,14 +941,14 @@ def test_a_failed_region_keeps_its_last_run_and_the_other_region_publishes(
     monkeypatch.setattr("estimate_updates.forecast_runs.calculate_estimate_update", fail_for_lazio)
 
     with pytest.raises(ForecastRunError, match="1 of 2 regions failed. 12: .*failed on purpose"):
-        tuscany_forecast_task.call(region_code="09,12", assessment_date=next_day.isoformat())
+        forecast_task.call(region_code="09,12", assessment_date=next_day.isoformat())
 
     assert published_forecast_run(region_code="09").run.assessment_date == next_day
     assert PublishedForecastRun.objects.get(region_code="12").current_run_id == lazio_before
     assert ForecastRun.objects.get(region_code="12", assessment_date=next_day).status == ForecastRun.Status.FAILED
 
     monkeypatch.setattr("estimate_updates.forecast_runs.calculate_estimate_update", real)
-    tuscany_forecast_task.call(region_code="09,12", assessment_date=next_day.isoformat())
+    forecast_task.call(region_code="09,12", assessment_date=next_day.isoformat())
 
     assert published_forecast_run(region_code="12").run.assessment_date == next_day
 

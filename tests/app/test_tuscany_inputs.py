@@ -165,7 +165,7 @@ def tuscany(tmp_path: Path, settings, requests) -> dict:
 
 def _run(*arguments: str, tuscany: dict) -> str:
     out = io.StringIO()
-    call_command("prepare_tuscany_inputs", f"--terrain-cache-dir={tuscany['cache_dir']}", *arguments, stdout=out)
+    call_command("prepare_region_inputs", "--regions=09", f"--terrain-cache-dir={tuscany['cache_dir']}", *arguments, stdout=out)
     return out.getvalue()
 
 
@@ -189,7 +189,7 @@ def test_dry_run_lists_every_source_and_writes_nothing(tuscany, requests) -> Non
         assert item["state"] == "ready"
     trees = _source(report=report, name="host_trees")
     assert trees["state"] == "missing"
-    assert "prepare_tuscany_inputs" in trees["action"]
+    assert "prepare_region_inputs" in trees["action"]
     assert all(item["action"] for item in report["sources"])
     assert requests == []
     assert HostTreeCache.objects.count() == 0
@@ -197,12 +197,18 @@ def test_dry_run_lists_every_source_and_writes_nothing(tuscany, requests) -> Non
     assert not tuscany["jrc"].exists()
 
 
-def test_dry_run_text_output_shows_state_version_and_action(tuscany) -> None:
+def test_dry_run_text_output_shows_region_state_and_totals(tuscany, requests) -> None:
+    _run(tuscany=tuscany)
     text = _run("--dry-run", tuscany=tuscany)
-    assert "administrative_geometry: ready" in text
-    assert f"version {tuscany['forest'].version}" in text
-    assert "action:" in text
+    assert "Dry run for regions 09" in text
+    assert "09 Toscana: ready, 3 squares, 2 forest squares" in text
+    assert "Totals: regions=1, ready=1, squares=3, forest_squares=2" in text
     assert "Elapsed:" in text
+
+
+def test_dry_run_text_output_names_the_failed_source_and_its_action(tuscany) -> None:
+    text = _run("--dry-run", tuscany=tuscany)
+    assert "host_trees is missing. Action: Run prepare_region_inputs" in text
 
 
 def test_real_run_stores_host_trees_for_every_eligible_square(tuscany, requests) -> None:
@@ -245,7 +251,7 @@ def test_repeat_run_makes_no_request_and_no_duplicate_rows(tuscany, requests, mo
 
 
 def test_small_batches_still_cover_all_squares(tuscany, monkeypatch) -> None:
-    monkeypatch.setattr("estimate_updates.tuscany_inputs.BATCH_SIZE", 1)
+    monkeypatch.setattr("estimate_updates.region_inputs.BATCH_SIZE", 1)
     _run(tuscany=tuscany)
     assert HostTreeCache.objects.count() == 2
 
@@ -272,7 +278,7 @@ def test_grid_with_a_membership_outside_tuscany_is_rejected(tuscany, requests) -
     report = _report("--dry-run", tuscany=tuscany)
     grid = _source(report=report, name="administrative_geometry")
     assert grid["state"] == "rejected"
-    assert "prepare_tuscany_map_database" in grid["action"]
+    assert "prepare_region_map_database" in grid["action"]
     assert report["ready"] is False
     with pytest.raises(CommandError, match="administrative_geometry is rejected"):
         _run(tuscany=tuscany)

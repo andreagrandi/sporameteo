@@ -162,7 +162,7 @@ terrain builds stay on the laptop, so the check skips them:
 
 ```sh
 sudo dokku run --no-tty sporameteo python apps/application/manage.py \
-  prepare_tuscany_inputs --dry-run --json --skip-source-files
+  prepare_region_inputs --regions 09 --dry-run --json --skip-source-files
 ```
 
 All four sources must report `ready`, and the `host_trees` version must be
@@ -587,7 +587,7 @@ section.
    ```
 
    The container and the host sort file names differently, so sort both lists
-   with `LC_ALL=C sort -k2` before comparing. Then run `prepare_tuscany_inputs`
+   with `LC_ALL=C sort -k2` before comparing. Then run `prepare_region_inputs --regions 09`
    as at the end of "Restore the Tuscany data".
 6. In Cloudflare, point `sporameteo.com`, `www.sporameteo.com` and
    `vps.sporameteo.com` to the new address. Then enable Let's Encrypt on the
@@ -640,7 +640,7 @@ downloads for its cleanup.
 | Let's Encrypt | 15 October 2026 | Certificate valid until 13 January 2027. The VPS answers `/health/` with 200 and a valid certificate for both names. |
 | Cloudflare Full Strict | 15 October 2026 | Set by the owner. `/health/` answers 200 through Cloudflare, and plain `http` redirects to `https`. |
 | CI deploy key | 15 October 2026 | Dokku key `sporameteo-ci`, private key in the `DOKKU_SSH_PRIVATE_KEY` secret. `git ls-remote` with it returns the deployed commit. |
-| Tuscany data | 15 October 2026 | Dump restored with the deployed commit `d25c2de`. Row counts match `docs/hosting_data.md`, except that `django_migrations` has 64 rows because `migrate` added `weather_on_demand.0006`. The dry run and a real run of `prepare_tuscany_inputs --skip-source-files` both report `ready` for all four sources. The real run took 2.3 seconds and left 71,031 host tree rows and 1 input set. `host_tree_source_version()` matches the laptop. `/api/v1/forest-layer` answers 200. The database takes 184 MB. The JRC files take 358,725,015 bytes and the forest layer file 208,655 bytes. Used disk went from 52% to 54% of 38 GB. No dump, staging folder or `_rpp.zip` file is left on the VPS. `DROP TABLE` removed the empty `micometeo_map_cache` table that the dump brought from before the rename, so the database has 55 tables. |
+| Tuscany data | 15 October 2026 | Dump restored with the deployed commit `d25c2de`. Row counts match `docs/hosting_data.md`, except that `django_migrations` has 64 rows because `migrate` added `weather_on_demand.0006`. The dry run and a real run of the Tuscany input preparation with `--skip-source-files`, now `prepare_region_inputs --regions 09`, both report `ready` for all four sources. The real run took 2.3 seconds and left 71,031 host tree rows and 1 input set. `host_tree_source_version()` matches the laptop. `/api/v1/forest-layer` answers 200. The database takes 184 MB. The JRC files take 358,725,015 bytes and the forest layer file 208,655 bytes. Used disk went from 52% to 54% of 38 GB. No dump, staging folder or `_rpp.zip` file is left on the VPS. `DROP TABLE` removed the empty `micometeo_map_cache` table that the dump brought from before the rename, so the database has 55 tables. |
 | First weather load | 15 October 2026 | The dry run planned 2026-10-15 in `initial` mode: 333 cells, 1,332 counted calls and 16 HTTP requests. The real run `f6557df6-8743-43d1-aad9-e8b01812c6b6` started at 19:21:22 UTC and ended `completed` at 19:44:23 UTC. `weather_on_demand_status` reports 1,332 counted calls, 16 attempts and no refused request. The chain queued the forecast without a manual command. It ran from 19:46:51 to 19:52:32 UTC and published run `fdde1518-478f-49e6-8ccf-9e6f098b098b`. The map cache warm-up ran from 19:52:32 to 19:52:42 UTC and left 602 cache rows. The 333 snapshots also queued 333 per-cell estimate tasks, which delayed the forecast start by about 2 minutes. `/api/v1/squares` returns available estimates for all eight dates near Abetone, in the Casentino, on Monte Amiata and in Lunigiana. The only unavailable squares have no forest. Area details name the municipality, for example Coreglia Antelminelli, Pratovecchio Stia, Arcidosso and Tresana. The database went from 184 MB, 192,416,915 bytes, to 301 MB, 315,804,819 bytes. |
 | Move rehearsal | 16 October 2026 | Export, import and file copy rehearsed into `sporameteo-db-rehearsal` and a scratch folder, then removed. Row counts of all 56 tables and checksums of all 38 data files matched. See "Move to another host". |
 | Region inputs | 18 October 2026 | Production ran `de09904` with `estimate_updates.0008` applied. `dokku postgres:info --internal-ip` printed nothing, so the tunnel used the address that `dokku postgres:enter sporameteo-db hostname -i` printed, 172.17.0.4. The dry run of `prepare_region_map_database` listed 20 regions, 1,217,473 squares, 717,104 forest squares and 92,707 reused Tuscany squares. The copy through the tunnel ran from about 07:09 to 07:25 UTC and committed. The forest layer file is 3,377,975 bytes, and its checksum on the VPS matches the laptop. `prepare_region_inputs` sampled 646,073 forest squares in 1,685 seconds, from 07:31 UTC, and the whole `dokku run` took 40 minutes 30 seconds. The dry run after the load reports 20 regions `ready`, 1,217,473 squares and 717,104 forest squares. The Tuscany check printed the same lines before and after, except size, which went from 493,137,043 to 2,718,485,651 bytes. |

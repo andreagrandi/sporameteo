@@ -24,7 +24,7 @@ requested update, including a retained previous assessment.
 ## Published runs
 
 The map, overview and details read the published run of every region, prepared
-at night by `run_tuscany_forecast`. A page request never fetches weather,
+at night by `run_forecast`. A page request never fetches weather,
 never downloads habitat data and never calculates an estimate. The run
 pointers are read from the database on every request, and a pointer changes
 only when a new run of its region is published. A region whose run was made

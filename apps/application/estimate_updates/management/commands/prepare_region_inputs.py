@@ -6,12 +6,11 @@ from pathlib import Path
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
-from estimate_updates.tuscany_inputs import (
+from estimate_updates.region_inputs import (
     READY,
     RegionStatus,
-    TuscanyReport,
+    RegionInputReport,
     all_region_codes,
-    REGION_COMMANDS,
     prepare_region_inputs,
 )
 
@@ -50,7 +49,7 @@ class Command(BaseCommand):
                 terrain_version=options["terrain_build_version"],
                 terrain_cache_dir=options["terrain_cache_dir"], dry_run=options["dry_run"],
                 allow_forest_only=options["allow_forest_only"],
-                check_source_files=not options["skip_source_files"], names=REGION_COMMANDS,
+                check_source_files=not options["skip_source_files"],
             )
         except (OSError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
@@ -83,7 +82,7 @@ class Command(BaseCommand):
             for item in region.problems
         )
 
-    def _write_text(self, *, report: TuscanyReport) -> None:
+    def _write_text(self, *, report: RegionInputReport) -> None:
         mode = "Dry run" if report.dry_run else "Preparation"
         self.stdout.write(f"{mode} for regions {', '.join(report.region_codes)}")
         for region in report.regions:

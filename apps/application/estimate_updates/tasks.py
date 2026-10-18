@@ -30,7 +30,7 @@ def warm_published_map_cache_task(*, region_code: str) -> int:
 
 
 @task
-def tuscany_forecast_task(*, region_code: str, assessment_date: str) -> str:
+def forecast_task(*, region_code: str, assessment_date: str) -> str:
     """Calculate and publish the forecast run of each region of the run key for one date.
     A region with a published run is skipped, and a failed region does not stop the others.
     The task raises after the last region when any failed, so the task row shows the failure."""
@@ -65,9 +65,9 @@ def tuscany_forecast_task(*, region_code: str, assessment_date: str) -> str:
     return "published"
 
 
-def queue_tuscany_forecast(*, region_code: str, assessment_date: date) -> uuid.UUID:
+def queue_forecast(*, region_code: str, assessment_date: date) -> uuid.UUID:
     """Queue the forecast task for a date and return the task ID."""
-    result = tuscany_forecast_task.enqueue(
+    result = forecast_task.enqueue(
         region_code=region_code,
         assessment_date=assessment_date.isoformat(),
     )

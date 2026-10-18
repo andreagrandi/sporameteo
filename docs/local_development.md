@@ -721,7 +721,7 @@ The hosted one-time bootstrap is tracked separately in [#88](https://github.com/
 
 ## Tuscany input readiness
 
-Build the Tuscany subset database first with `prepare_tuscany_map_database`.
+Build the Tuscany subset database first with `prepare_region_map_database --regions 09`.
 Then run `load_municipalities` on it. The command reads the `Com01012026`
 folder of `data/raw/mvp_boundaries/Limiti01012026.zip`, stores the 273 Tuscan
 municipalities and names the municipality of each square by largest overlap.
@@ -737,8 +737,8 @@ uv run python apps/application/manage.py load_municipalities
 Then check and prepare every stored input for the Tuscany map:
 
 ```sh
-uv run python apps/application/manage.py prepare_tuscany_inputs --dry-run
-uv run python apps/application/manage.py prepare_tuscany_inputs
+uv run python apps/application/manage.py prepare_region_inputs --regions 09 --dry-run
+uv run python apps/application/manage.py prepare_region_inputs --regions 09
 ```
 
 The report lists four sources: `administrative_geometry`, `forest`, `terrain`

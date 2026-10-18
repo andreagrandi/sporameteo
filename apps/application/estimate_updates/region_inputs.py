@@ -19,7 +19,6 @@ from sporameteo.host_trees import checksum, prepare_sources, read_manifest, samp
 from national_forest import layer
 from national_forest.models import ForestBuild, ForestCell, ForestChunk
 from national_grid.models import GridBuild, GridBuildCell, GridRegion
-from national_grid.subset import TUSCANY_ISTAT_CODE
 from national_terrain.models import TerrainBuild, TerrainCell, TerrainSourceTile
 from national_terrain.source import raster_path, sha256_path
 
@@ -39,21 +38,12 @@ FALLBACK = "fallback"
 BLOCKED = "blocked"
 
 
-@dataclass(frozen=True)
-class CommandNames:
-    """Name the commands that the action texts tell the reader to run."""
-
-    inputs: str
-    database: str
+DATABASE_COMMAND = "prepare_region_map_database"
+INPUTS_COMMAND = "prepare_region_inputs"
 
 
-TUSCANY_COMMANDS = CommandNames(inputs="prepare_tuscany_inputs", database="prepare_tuscany_map_database")
-REGION_COMMANDS = CommandNames(inputs="prepare_region_inputs", database="prepare_region_map_database")
-
-
-def _prepare_database(*, names: CommandNames) -> str:
-    subset = "Tuscany subset" if names == TUSCANY_COMMANDS else "regional subset"
-    return f"Run {names.database} to build the {subset} database. This command does not rebuild it."
+def _prepare_database() -> str:
+    return f"Run {DATABASE_COMMAND} to build the regional subset database. This command does not rebuild it."
 
 
 @dataclass
@@ -114,7 +104,7 @@ Gaps = dict[str, Gap]
 
 
 @dataclass
-class TuscanyReport:
+class RegionInputReport:
     """Hold the inventory of all four sources, the per-region results and the preparation counts."""
 
     region_code: str
@@ -155,17 +145,17 @@ def _sample(values: list[str]) -> list[str]:
     return [_sample_text(cell_ids=values, total=len(values))]
 
 
-def _check_grid(*, forest: ForestBuild | None, region_codes: list[str], names: CommandNames) -> SourceStatus:
+def _check_grid(*, forest: ForestBuild | None, region_codes: list[str]) -> SourceStatus:
     if forest is None:
         return SourceStatus(
             source="administrative_geometry", state=MISSING, version="",
-            action="The configured forest build is missing, so the grid cannot be identified. " + _prepare_database(names=names),
+            action="The configured forest build is missing, so the grid cannot be identified. " + _prepare_database(),
         )
     grid = forest.grid_build
     result = SourceStatus(source="administrative_geometry", state=READY, version=grid.version, action="None.")
 
     def fail(*, state: str, detail: str, action: str = "") -> SourceStatus:
-        action = action or _prepare_database(names=names)
+        action = action or _prepare_database()
         result.state, result.action = state, action
         result.detail.append(detail)
         return result
@@ -209,8 +199,8 @@ def _missing_rows(*, grid: GridBuild, model: type, build: Any) -> tuple[list[str
     return cell_ids, gaps
 
 
-def _check_forest(*, names: CommandNames, forest: ForestBuild | None, version: str, grid: SourceStatus, gaps: Gaps, check_source_files: bool = True) -> SourceStatus:
-    action = f"Run {names.database}, or build_national_forest for the national build."
+def _check_forest(*, forest: ForestBuild | None, version: str, grid: SourceStatus, gaps: Gaps, check_source_files: bool = True) -> SourceStatus:
+    action = f"Run {DATABASE_COMMAND}, or build_national_forest for the national build."
     if forest is None:
         return SourceStatus(
             source="forest", state=MISSING, version=version, action=action,
@@ -257,8 +247,8 @@ def _check_forest(*, names: CommandNames, forest: ForestBuild | None, version: s
     return result
 
 
-def _check_terrain(*, names: CommandNames, terrain: TerrainBuild | None, version: str, grid: SourceStatus, forest: ForestBuild | None, gaps: Gaps, cache_dir: Path, check_source_files: bool = True) -> SourceStatus:
-    action = f"Run {names.database}, or build_national_terrain for the national build."
+def _check_terrain(*, terrain: TerrainBuild | None, version: str, grid: SourceStatus, forest: ForestBuild | None, gaps: Gaps, cache_dir: Path, check_source_files: bool = True) -> SourceStatus:
+    action = f"Run {DATABASE_COMMAND}, or build_national_terrain for the national build."
     if terrain is None:
         return SourceStatus(
             source="terrain", state=MISSING, version=version, action=action,
@@ -329,7 +319,7 @@ def _unstored_batches(*, forest: ForestBuild, version: str) -> Iterator[list[tup
         yield missing
 
 
-def _check_host_trees(*, names: CommandNames, forest: ForestBuild | None, ready: bool, directory: Path, allow_forest_only: bool, gaps: Gaps) -> tuple[SourceStatus, dict | None]:
+def _check_host_trees(*, forest: ForestBuild | None, ready: bool, directory: Path, allow_forest_only: bool, gaps: Gaps) -> tuple[SourceStatus, dict | None]:
     """Return the host-tree status and the manifest if readable."""
     result = SourceStatus(source="host_trees", state=READY, version="", action="None.")
     if forest is None or not ready:
@@ -364,8 +354,8 @@ def _check_host_trees(*, names: CommandNames, forest: ForestBuild | None, ready:
         else:
             result.state = state
             result.action = (
-                f"Run {names.inputs} to download the JRC files." if manifest is None and state == MISSING
-                else f"Restore the JRC files or prepare a new JRC directory, then run {names.inputs}."
+                f"Run {INPUTS_COMMAND} to download the JRC files." if manifest is None and state == MISSING
+                else f"Restore the JRC files or prepare a new JRC directory, then run {INPUTS_COMMAND}."
             )
         result.detail.append(problem)
         return result, None
@@ -380,7 +370,7 @@ def _check_host_trees(*, names: CommandNames, forest: ForestBuild | None, ready:
     result.counts["missing_squares"] = missing
     if missing:
         result.state = INCOMPLETE
-        result.action = f"Run {names.inputs} to sample the missing squares from the local JRC files."
+        result.action = f"Run {INPUTS_COMMAND} to sample the missing squares from the local JRC files."
         result.detail.append(f"{missing} squares have no host-tree values: " + _sample_text(cell_ids=sample, total=missing))
     return result, manifest
 
@@ -431,32 +421,28 @@ def _region_statuses(*, region_codes: list[str], forest: ForestBuild | None, sou
 
 def build_inventory(
     *, region_codes: list[str], forest_version: str, terrain_version: str, terrain_cache_dir: Path,
-    allow_forest_only: bool = False, check_source_files: bool = True, names: CommandNames | None = None,
-) -> tuple[TuscanyReport, dict | None]:
+    allow_forest_only: bool = False, check_source_files: bool = True,
+) -> tuple[RegionInputReport, dict | None]:
     """Check each source for the chosen regions without writing or contacting a provider.
     Also return the JRC manifest if it is usable."""
     forest = ForestBuild.objects.filter(version=forest_version).select_related("grid_build").first()
     terrain = TerrainBuild.objects.filter(version=terrain_version).first()
     gaps: dict[str, Gaps] = {"forest": {}, "terrain": {}, "host_trees": {}}
-    names = names or TUSCANY_COMMANDS
-    grid = _check_grid(forest=forest, region_codes=region_codes, names=names)
+    grid = _check_grid(forest=forest, region_codes=region_codes)
     forest_status = _check_forest(
-        names=names,
         forest=forest, version=forest_version, grid=grid, gaps=gaps["forest"], check_source_files=check_source_files,
     )
     terrain_status = _check_terrain(
-        names=names,
         terrain=terrain, version=terrain_version, grid=grid, forest=forest, gaps=gaps["terrain"],
         cache_dir=terrain_cache_dir, check_source_files=check_source_files,
     )
     trees, manifest = _check_host_trees(
-        names=names,
         forest=forest, ready=grid.state == READY and forest_status.state == READY,
         directory=Path(settings.SPORAMETEO_JRC_DIRECTORY), allow_forest_only=allow_forest_only,
         gaps=gaps["host_trees"],
     )
     sources = [grid, forest_status, terrain_status, trees]
-    report = TuscanyReport(
+    report = RegionInputReport(
         region_code=",".join(region_codes), dry_run=True, sources=sources, region_codes=list(region_codes),
         regions=_region_statuses(region_codes=region_codes, forest=forest, sources=sources, gaps=gaps),
     )
@@ -486,17 +472,16 @@ def all_region_codes(*, forest_version: str) -> list[str]:
 def prepare_region_inputs(
     *, region_codes: list[str], forest_version: str, terrain_version: str, terrain_cache_dir: Path,
     dry_run: bool = False, allow_forest_only: bool = False, check_source_files: bool = True,
-    names: CommandNames | None = None,
-) -> TuscanyReport:
+) -> RegionInputReport:
     """Report readiness and, unless dry, store host-tree values for every eligible square of the regions.
     Only a missing JRC manifest triggers a download. Older source versions stay untouched."""
     started = time.monotonic()
 
-    def inventory() -> tuple[TuscanyReport, dict | None]:
+    def inventory() -> tuple[RegionInputReport, dict | None]:
         report, manifest = build_inventory(
             region_codes=region_codes, forest_version=forest_version, terrain_version=terrain_version,
             terrain_cache_dir=terrain_cache_dir, allow_forest_only=allow_forest_only,
-            check_source_files=check_source_files, names=names,
+            check_source_files=check_source_files,
         )
         report.dry_run = dry_run
         return report, manifest
@@ -520,7 +505,7 @@ def prepare_region_inputs(
     report.counts = {
         "eligible_squares": trees.counts.get("eligible_squares", 0),
         "missing_host_tree_squares": trees.counts.get("missing_squares", 0),
-        "tuscany_squares": report.sources[0].counts.get("squares", 0),
+        "squares": report.sources[0].counts.get("squares", 0),
         "input_sets": TuscanyInputSet.objects.count(),
         "host_tree_rows": HostTreeCache.objects.filter(source_version=trees.version).count() if trees.version else 0,
     }
@@ -528,16 +513,7 @@ def prepare_region_inputs(
     return report
 
 
-def prepare_tuscany_inputs(*, terrain_cache_dir: Path, dry_run: bool = False, allow_forest_only: bool = False, check_source_files: bool = True) -> TuscanyReport:
-    """Run the region preparation for Tuscany with the build versions from the settings."""
-    return prepare_region_inputs(
-        region_codes=[TUSCANY_ISTAT_CODE], forest_version=settings.SPORAMETEO_FOREST_BUILD_VERSION,
-        terrain_version=settings.SPORAMETEO_TERRAIN_BUILD_VERSION, terrain_cache_dir=terrain_cache_dir,
-        dry_run=dry_run, allow_forest_only=allow_forest_only, check_source_files=check_source_files,
-    )
-
-
-def _record_provenance(*, report: TuscanyReport, manifest: dict) -> None:
+def _record_provenance(*, report: RegionInputReport, manifest: dict) -> None:
     grid, forest, terrain, trees = report.sources
     with transaction.atomic():
         for region in report.regions:

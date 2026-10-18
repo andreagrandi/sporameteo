@@ -157,7 +157,7 @@ Preparation copied no weather, estimates or queued work. Validation passed
 before the worker started. The source still contained 92,707 Tuscany
 memberships after the copy.
 An additional join check found no missing forest or terrain membership in
-the live subset. The preparation command and its validation check now compare
+the live subset. The preparation command now compares
 the exact membership sets, so matching incomplete row counts cannot pass.
 
 The source builds are `italy-500m-istat-2026-01-01-v1`,
@@ -169,12 +169,16 @@ uncompressed bytes. Its SHA-256 is
 `b97c36dd0fb70544ef4e0e24c07e2772074bd9be537243df7feebe3dce6fa170`.
 
 Create an empty database and apply migrations before preparing another local
-copy. The command refuses to overwrite populated application tables:
+copy. The region command does not refuse a database that already holds rows, so
+start from a new empty migrated database:
 
 ```sh
 SPORAMETEO_DB_NAME=sporameteo_tuscany_56 \
 SPORAMETEO_SOURCE_DB_NAME=sporameteo \
-uv run python apps/application/manage.py prepare_tuscany_map_database \
+uv run python apps/application/manage.py prepare_region_map_database --regions 09 \
+  --grid-build-version tuscany-grid-italy-500m-istat-2026-01-01-v1-56 \
+  --forest-build-version tuscany-forest-italy-forest-copernicus-2018-v1-56 \
+  --terrain-build-version tuscany-terrain-italy-terrain-glo30-2021-v2-56 \
   --source-grid-build-version italy-500m-istat-2026-01-01-v1 \
   --source-forest-build-version italy-forest-copernicus-2018-v1 \
   --source-terrain-build-version italy-terrain-glo30-2021-v2
@@ -194,8 +198,6 @@ are cached by update, square and date without an expiry, so a detail cached
 earlier keeps the plain heading until its cache entry is removed, for example
 when the map cache is cleared.
 
-Append `--validate-only` to check the static subset before its first worker
-run. This check requires the absence of dynamic weather and estimate rows.
 Set the database name and both subset habitat versions in the application
 and worker environments.
 
