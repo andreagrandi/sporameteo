@@ -180,6 +180,42 @@ No counts were taken before the deploy. After the rebuild the database held
 rows from the files. It also held 999 snapshots, 2 forecast runs and 355,155
 estimate results. The API rows stay in the database as decision D15 requires.
 
+## First night for all regions in production
+
+The code of #154 was deployed on 18 October 2026 at 09:33 UTC, with the
+migrations `weather_on_demand.0008` and `weather_summaries.0004`. The app then
+switched to `SPORAMETEO_FOREST_BUILD_VERSION=regions-all-forest-italy-forest-copernicus-2018-v1`,
+`SPORAMETEO_TERRAIN_BUILD_VERSION=regions-all-terrain-italy-terrain-glo30-2021-v2`
+and `SPORAMETEO_NIGHTLY_REGIONS=all`. To go back to Tuscany, set the two
+`tuscany-...-56` build versions and `SPORAMETEO_NIGHTLY_REGIONS=09` again.
+
+The dry run for 18 October listed 3,726 weather cells, 333 of them already
+ready from the Tuscany night, 288.3 MB to read and 0 API calls. The run was
+then started by hand with `--assessment-date 2026-10-18`, so it was a first
+load of 38 days for 3,393 cells. Tuscany was skipped, because its cells and
+its forecast run of that date were already ready.
+
+| Step | VPS time | Peak memory of the worker |
+|---|---|---|
+| Weather read, 154.4 MB in 4,817 requests | 11.5 min, 09:38:55 to 09:50:28 UTC | 260 MB |
+| Estimates of 19 regions in one task | 10.5 min, 09:50:28 to 10:00:57 UTC | 183 MB |
+| Map cache warm-up of Tuscany, by hand | 6 s | 111 MB |
+
+The memory figures are the highest `memory.current` of the worker container,
+read every 2 seconds. The worker limit is 384 MB. The `peak_memory_mb` of
+314.8 MB on the forecast runs is the peak of the whole worker process, the
+weather read included. The weather run `79793efe-e471-42b9-b806-ba95ec618af6`
+made 0 provider attempts, and no cell lacked hours. All 20 regions have a
+published run for 18 October. The regions took 6 to 54 seconds each.
+`reports/italy_night_cost.md` expected about 13 minutes and 302 MB for the
+first-load read and about 5.8 minutes for the estimates. The 19 runs record
+9.4 minutes of runtime in all, and the gaps between regions add about one
+minute. The cause of the difference with the report was not measured.
+
+The warm-up ran only for Tuscany, so the 232 MB measured for all Italy in the
+report is still to be checked with #155. After the switch a squares request
+near Abetone returned 181 available squares of the 18 October run in 0.33 s.
+
 ## Live worker check
 
 On 12 October 2026, a map request near Abetone queued the missing weather cell
