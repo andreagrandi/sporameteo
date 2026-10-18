@@ -1,4 +1,4 @@
-"""Read the published Tuscany run for the map and keep derived map data in a shared cache.
+"""Read the published runs of every region for the map and keep derived map data in a shared cache.
 
 Page requests only read stored rows. They never fetch weather, download habitat data or
 calculate estimates. Square lists, run results and finished response bodies live in the
@@ -19,6 +19,7 @@ from uuid import UUID
 
 import numpy
 import shapely
+from django.conf import settings
 from django.contrib.gis.db.models import Extent
 from django.contrib.gis.db.models.functions import Transform
 from django.contrib.gis.geos import Polygon as GeosPolygon
@@ -36,14 +37,14 @@ from estimate_updates.models import (
 from sporameteo.finds.grid import CELL_SIZE_M
 from national_forest.models import ForestCell
 from national_grid.models import GridRegion
-from weather_requests.eligibility import TUSCANY_ISTAT_CODE, weather_cell
+from weather_requests.eligibility import weather_cell
 
 
 WGS84_TO_GRID = Transformer.from_crs("EPSG:4326", "EPSG:3035", always_xy=True)
 GRID_TO_WGS84 = Transformer.from_crs("EPSG:3035", "EPSG:4326", always_xy=True)
 
 CACHE_ALIAS = "map"
-CACHE_VERSION = "map-v1"
+CACHE_VERSION = "map-v2"
 TILE_SIZE_M = 10_000
 MIN_FOREST_SHARE = 0.1
 NO_VALUE = 255
@@ -72,14 +73,11 @@ class MapReadError(Exception):
         self.details = details
 
 
-class MapCacheError(ValueError):
-    """Report a cache warming request that is not allowed."""
-
-
 @dataclass(frozen=True)
 class PublishedRun:
-    """Describe the run that readers use, read from one pointer row."""
+    """Describe the run that readers use for one region, read from one pointer row."""
 
+    region_code: str
     run_id: str
     assessment_date: date
     published_at: datetime
@@ -96,8 +94,33 @@ class PublishedRun:
 
 
 @dataclass(frozen=True)
+class PublishedMap:
+    """Hold the current run of each published region that uses the configured forest build."""
+
+    runs: dict[str, PublishedRun]
+    forest_build_id: Any
+    forest_build_version: str
+    grid_build_id: Any
+    map_id: str
+
+    @property
+    def newest(self) -> PublishedRun:
+        """Return the run with the latest assessment date."""
+        return max(self.runs.values(), key=lambda run: (run.assessment_date, run.region_code))
+
+    @property
+    def latest_published_at(self) -> datetime:
+        """Return the time of the most recent publication."""
+        return max(run.published_at for run in self.runs.values())
+
+    def available_dates(self, *, today: date) -> list[date]:
+        """Return the dates of the newest run that are not in the past."""
+        return self.newest.available_dates(today=today)
+
+
+@dataclass(frozen=True)
 class RunSummary:
-    """Hold the update of each weather cell of one run and the Tuscany extent."""
+    """Hold the update of each weather cell of one run and the extent of its region."""
 
     assessment_date: str
     method_version: str
@@ -109,6 +132,7 @@ class RunSummary:
 class StaticSquare(NamedTuple):
     """Hold the fixed facts of one square of a forest build."""
 
+    region_code: str
     cell_id: str
     forest_cell_id: int
     corner_e: int
@@ -134,17 +158,10 @@ def map_cache() -> Any:
     return caches[CACHE_ALIAS]
 
 
-def published_run() -> PublishedRun | None:
-    """Read the published Tuscany run pointer from the database with one query."""
-    pointer = (
-        PublishedForecastRun.objects.select_related("current_run__forest_build")
-        .filter(region_code=TUSCANY_ISTAT_CODE)
-        .first()
-    )
-    if pointer is None:
-        return None
+def _published_run(*, pointer: PublishedForecastRun) -> PublishedRun:
     run = pointer.current_run
     return PublishedRun(
+        region_code=pointer.region_code,
         run_id=str(run.id),
         assessment_date=run.assessment_date,
         published_at=pointer.published_at,
@@ -157,20 +174,62 @@ def published_run() -> PublishedRun | None:
     )
 
 
-def run_info(*, run: PublishedRun) -> dict[str, Any]:
-    """Return the public description of one run."""
+def _map_id(*, runs: dict[str, PublishedRun]) -> str:
+    text = "|".join(f"{code}:{runs[code].run_id}" for code in sorted(runs))
+    return hashlib.sha256(text.encode()).hexdigest()[:32]
+
+
+def published_map() -> PublishedMap | None:
+    """Read the pointer of every region with one query and keep the runs of the configured build."""
+    version = str(getattr(settings, "SPORAMETEO_FOREST_BUILD_VERSION", ""))
+    pointers = PublishedForecastRun.objects.select_related("current_run__forest_build").order_by(
+        "region_code",
+    )
+    runs = {
+        pointer.region_code: _published_run(pointer=pointer)
+        for pointer in pointers
+        if pointer.current_run.forest_build.version == version
+    }
+    if not runs:
+        return None
+    first = next(iter(runs.values()))
+    return PublishedMap(
+        runs=runs,
+        forest_build_id=first.forest_build_id,
+        forest_build_version=first.forest_build_version,
+        grid_build_id=first.grid_build_id,
+        map_id=_map_id(runs=runs),
+    )
+
+
+def map_info(*, published: PublishedMap) -> dict[str, Any]:
+    """Return the public description of the map run and of each published region run."""
+    newest = published.newest
     return {
-        "run_id": run.run_id,
-        "assessment_date": run.assessment_date.isoformat(),
-        "published_at": run.published_at.isoformat(),
-        "target_dates": [value.isoformat() for value in run.target_dates],
+        "run_id": published.map_id,
+        "assessment_date": newest.assessment_date.isoformat(),
+        "published_at": published.latest_published_at.isoformat(),
+        "target_dates": [value.isoformat() for value in newest.target_dates],
     }
 
 
-def tuscany_extent(*, grid_build_id: Any) -> tuple[float, float, float, float] | None:
-    """Return the WGS84 extent of the Tuscany region geometry of one grid build."""
+def regions_info(*, published: PublishedMap) -> list[dict[str, Any]]:
+    """Return the run of each published region, sorted by region code."""
+    return [
+        {
+            "region_code": code,
+            "run_id": run.run_id,
+            "assessment_date": run.assessment_date.isoformat(),
+            "published_at": run.published_at.isoformat(),
+        }
+        for code, run in sorted(published.runs.items())
+    ]
+
+
+def region_extent(*, grid_build_id: Any, region_codes: list[str]) -> Bbox | None:
+    """Return the WGS84 extent of the geometries of the given regions of one grid build."""
     extent = (
-        GridRegion.objects.filter(build_id=grid_build_id, istat_code=TUSCANY_ISTAT_CODE)
+        GridRegion.objects.filter(build_id=grid_build_id, istat_code__in=region_codes)
         .annotate(wgs84_geometry=Transform("geometry", srid=4326))
         .aggregate(wgs84_extent=Extent("wgs84_geometry"))
         .get("wgs84_extent")
@@ -179,6 +238,24 @@ def tuscany_extent(*, grid_build_id: Any) -> tuple[float, float, float, float] |
         return None
     west, south, east, north = extent
     return float(west), float(south), float(east), float(north)
+
+
+def _cached_extent(*, grid_build_id: Any, region_code: str) -> Bbox | None:
+    """Return the cached extent of one region, read from the database when it is missing."""
+    cache = map_cache()
+    key = f"{CACHE_VERSION}:extent:{grid_build_id}:{region_code}"
+    extent = cache.get(key)
+    if extent is None:
+        extent = region_extent(grid_build_id=grid_build_id, region_codes=[region_code])
+        if extent is not None:
+            cache.set(key, extent, timeout=None)
+    return extent
+
+
+def _meets(*, extent: Bbox, bbox: Bbox) -> bool:
+    west, south, east, north = bbox
+    ext_west, ext_south, ext_east, ext_north = extent
+    return not (west > ext_east or east < ext_west or south > ext_north or north < ext_south)
 
 
 def _summary_key(*, run: PublishedRun) -> str:
@@ -201,7 +278,7 @@ def _build_summary(*, run: PublishedRun) -> RunSummary:
         method_version=run.method_version,
         cell_updates=cell_updates,
         updates=updates,
-        extent=tuscany_extent(grid_build_id=run.grid_build_id),
+        extent=_cached_extent(grid_build_id=run.grid_build_id, region_code=run.region_code),
     )
 
 
@@ -216,8 +293,8 @@ def run_summary(*, run: PublishedRun) -> RunSummary:
     return summary
 
 
-def _static_key(*, run: PublishedRun, tile: Tile) -> str:
-    return f"{CACHE_VERSION}:static:{run.forest_build_version}:{tile[0]}:{tile[1]}"
+def _static_key(*, published: PublishedMap, tile: Tile) -> str:
+    return f"{CACHE_VERSION}:static:{published.forest_build_version}:{tile[0]}:{tile[1]}"
 
 
 def _run_tile_key(*, run: PublishedRun, tile: Tile) -> str:
@@ -261,7 +338,7 @@ def _weather_key(*, latitude: float | None, longitude: float | None) -> str | No
 
 
 def _load_static_tiles(
-    *, run: PublishedRun, tiles: list[Tile],
+    *, published: PublishedMap, tiles: list[Tile],
 ) -> dict[Tile, tuple[StaticSquare, ...]]:
     """Read the squares of the missing tiles with one forest cell query."""
     wanted = set(tiles)
@@ -278,11 +355,12 @@ def _load_static_tiles(
     area.srid = 3035
     rows = (
         ForestCell.objects.filter(
-            build_id=run.forest_build_id,
+            build_id=published.forest_build_id,
             grid_build_cell__cell__geometry__within=area,
         )
         .order_by()
         .values_list(
+            "grid_build_cell__owner_region__istat_code",
             "id",
             "grid_build_cell__cell__cell_id",
             "grid_build_cell__cell__corner_e",
@@ -293,13 +371,14 @@ def _load_static_tiles(
             "weather_longitude",
         )
     )
-    kept = [row for row in rows if _tile_of(corner_e=row[2], corner_n=row[3]) in wanted]
-    geometries = _square_geometries(corners=[(row[2], row[3]) for row in kept])
+    kept = [row for row in rows if _tile_of(corner_e=row[3], corner_n=row[4]) in wanted]
+    geometries = _square_geometries(corners=[(row[3], row[4]) for row in kept])
     squares: dict[Tile, list[StaticSquare]] = {tile: [] for tile in tiles}
     for row, geometry in zip(kept, geometries, strict=True):
-        forest_cell_id, cell_id, corner_e, corner_n, is_forest, share, latitude, longitude = row
+        region_code, forest_cell_id, cell_id, corner_e, corner_n, is_forest, share, latitude, longitude = row
         squares[_tile_of(corner_e=corner_e, corner_n=corner_n)].append(
             StaticSquare(
+                region_code=region_code,
                 cell_id=cell_id,
                 forest_cell_id=forest_cell_id,
                 corner_e=corner_e,
@@ -330,15 +409,19 @@ def needs_result(*, square: StaticSquare) -> bool:
 
 def _load_run_tiles(
     *,
+    region_code: str,
     summary: RunSummary,
     static: dict[Tile, tuple[StaticSquare, ...]],
     tiles: list[Tile],
 ) -> dict[Tile, dict[int, tuple[int, tuple[int | str, ...] | None]]]:
-    """Read the stored results of the missing tiles with one estimate result query."""
+    """Read the stored results of the squares of one region in the missing tiles with one query."""
     by_update: dict[int, list[int]] = {}
     tile_of_cell: dict[int, Tile] = {}
     for tile in tiles:
         for square in static[tile]:
+            # A border weather cell has a different update in each region.
+            if square.region_code != region_code:
+                continue
             if not needs_result(square=square) or square.weather_key is None:
                 continue
             update_id = summary.cell_updates.get(square.weather_key)
@@ -385,12 +468,14 @@ def _cached_tiles(
     return values
 
 
-def static_tiles(*, run: PublishedRun, tiles: list[Tile]) -> dict[Tile, tuple[StaticSquare, ...]]:
+def static_tiles(
+    *, published: PublishedMap, tiles: list[Tile],
+) -> dict[Tile, tuple[StaticSquare, ...]]:
     """Return the squares of each tile, loading only the tiles that are not cached."""
     return _cached_tiles(
         tiles=tiles,
-        key_for=lambda tile: _static_key(run=run, tile=tile),
-        load_missing=lambda missing: _load_static_tiles(run=run, tiles=missing),
+        key_for=lambda tile: _static_key(published=published, tile=tile),
+        load_missing=lambda missing: _load_static_tiles(published=published, tiles=missing),
     )
 
 
@@ -405,7 +490,9 @@ def run_tiles(
     return _cached_tiles(
         tiles=tiles,
         key_for=lambda tile: _run_tile_key(run=run, tile=tile),
-        load_missing=lambda missing: _load_run_tiles(summary=summary, static=static, tiles=missing),
+        load_missing=lambda missing: _load_run_tiles(
+            region_code=run.region_code, summary=summary, static=static, tiles=missing,
+        ),
     )
 
 
@@ -442,10 +529,10 @@ def _select_squares(
     return sorted(chosen, key=lambda pair: pair[1].cell_id)
 
 
-def _body_key(*, kind: str, run: PublishedRun, target_date: date, bbox: Bbox, extra: str = "") -> str:
+def _body_key(*, kind: str, map_id: str, target_date: date, bbox: Bbox, extra: str = "") -> str:
     text = ",".join(format(value, ".6f") for value in bbox)
     digest = hashlib.sha256(f"{text}|{extra}".encode()).hexdigest()
-    return f"{CACHE_VERSION}:{kind}:{run.run_id}:{target_date.isoformat()}:{digest}"
+    return f"{CACHE_VERSION}:{kind}:{map_id}:{target_date.isoformat()}:{digest}"
 
 
 def cached_body(*, key: str) -> CachedBody | None:
@@ -497,7 +584,7 @@ def _properties(
     *,
     square: StaticSquare,
     result: tuple[int, tuple[int | str, ...] | None] | None,
-    summary: RunSummary,
+    summary: RunSummary | None,
     target_date: date,
     offset: int,
 ) -> dict[str, Any]:
@@ -513,7 +600,7 @@ def _properties(
             **plain, state="noforest", percentage=None, reason="noforest",
             message_key="estimate.no_forest",
         )
-    if result is None:
+    if result is None or summary is None:
         return _square_properties(
             **plain, state="unavailable", percentage=None, reason="outside_prepared_area",
             message_key="estimate.outside_prepared_area",
@@ -525,7 +612,7 @@ def _properties(
         "update_id": public_id,
         "calculated_at": calculated_at,
     }
-    value = values[offset] if values is not None and offset < len(values) else None
+    value = values[offset] if values is not None and 0 <= offset < len(values) else None
     if value is None:
         return _square_properties(
             **plain, **known, state="unavailable", percentage=None, reason="requiredgap",
@@ -542,12 +629,15 @@ def _properties(
     )
 
 
-def _check_extent(*, summary: RunSummary, bbox: Bbox) -> None:
-    if summary.extent is None:
-        return
-    west, south, east, north = bbox
-    ext_west, ext_south, ext_east, ext_north = summary.extent
-    if west > ext_east or east < ext_west or south > ext_north or north < ext_south:
+def _check_extent(*, published: PublishedMap, bbox: Bbox) -> None:
+    """Raise when the bbox touches the extent of no published region."""
+    extents = [
+        extent
+        for code in published.runs
+        if (extent := _cached_extent(grid_build_id=published.grid_build_id, region_code=code))
+        is not None
+    ]
+    if extents and not any(_meets(extent=extent, bbox=bbox) for extent in extents):
         raise _outside_coverage()
 
 
@@ -555,25 +645,28 @@ def _outside_coverage() -> MapReadError:
     return MapReadError(
         status=400,
         code="outside_coverage",
-        message="The bbox is outside the prepared Tuscany coverage.",
+        message="The bbox is outside the regions with published estimates.",
         message_key="map.outside_coverage",
     )
 
 
+def _offset(*, run: PublishedRun, target_date: date) -> int:
+    return (target_date - run.assessment_date).days
+
+
 def read_squares(
-    *, run: PublishedRun, target_date: date, bbox: Bbox, max_squares: int,
+    *, published: PublishedMap, target_date: date, bbox: Bbox, max_squares: int,
 ) -> CachedBody:
-    """Return the squares of one view for one date of the published run."""
+    """Return the squares of one view for one date, each from the run of its own region."""
     bbox = _normalized_bbox(bbox=bbox)
-    key = _body_key(kind="squares", run=run, target_date=target_date, bbox=bbox)
+    key = _body_key(kind="squares", map_id=published.map_id, target_date=target_date, bbox=bbox)
     stored = cached_body(key=key)
     if stored is not None:
         return stored
-    summary = run_summary(run=run)
-    _check_extent(summary=summary, bbox=bbox)
+    _check_extent(published=published, bbox=bbox)
     area = _bbox_polygon(bbox=bbox)
     tiles = _tiles_in(bounds=area.bounds)
-    static = static_tiles(run=run, tiles=tiles)
+    static = static_tiles(published=published, tiles=tiles)
     selected = _select_squares(static=static, area=area)
     if not selected:
         raise _outside_coverage()
@@ -585,9 +678,13 @@ def read_squares(
             message_key="map.square_limit_exceeded",
             details={"square_count": len(selected), "max_squares": max_squares},
         )
-    used = sorted({tile for tile, _ in selected})
-    results = run_tiles(run=run, summary=summary, static=static, tiles=used)
-    offset = (target_date - run.assessment_date).days
+    summaries: dict[str, RunSummary] = {}
+    results: dict[str, dict[Tile, dict[int, tuple[int, tuple[int | str, ...] | None]]]] = {}
+    for code in sorted({square.region_code for _, square in selected} & set(published.runs)):
+        run = published.runs[code]
+        used = sorted({tile for tile, square in selected if square.region_code == code})
+        summaries[code] = run_summary(run=run)
+        results[code] = run_tiles(run=run, summary=summaries[code], static=static, tiles=used)
     features = [
         {
             "type": "Feature",
@@ -595,18 +692,20 @@ def read_squares(
             "geometry": square.geometry,
             "properties": _properties(
                 square=square,
-                result=results[tile].get(square.forest_cell_id),
-                summary=summary,
+                result=results.get(square.region_code, {}).get(tile, {}).get(square.forest_cell_id),
+                summary=summaries.get(square.region_code),
                 target_date=target_date,
-                offset=offset,
+                offset=_offset(run=published.runs[square.region_code], target_date=target_date)
+                if square.region_code in published.runs
+                else 0,
             ),
         }
         for tile, square in selected
     ]
     body = {
         "type": "FeatureCollection",
-        "run_id": run.run_id,
-        "assessment_date": summary.assessment_date,
+        "run_id": published.map_id,
+        "assessment_date": published.newest.assessment_date.isoformat(),
         "target_date": target_date.isoformat(),
         "square_count": len(features),
         "features": features,
@@ -614,50 +713,116 @@ def read_squares(
     return _store_body(key=key, body=body)
 
 
-def overview_key(*, run: PublishedRun, target_date: date, bbox: Bbox, size: int) -> str:
+def overview_key(*, published: PublishedMap, target_date: date, bbox: Bbox, size: int) -> str:
     """Return the cache key of one overview response."""
     return _body_key(
-        kind="overview2", run=run, target_date=target_date, bbox=_normalized_bbox(bbox=bbox),
-        extra=str(size),
+        kind="overview2", map_id=published.map_id, target_date=target_date,
+        bbox=_normalized_bbox(bbox=bbox), extra=str(size),
+    )
+
+
+def _union_extent(*, published: PublishedMap) -> Bbox | None:
+    extents = [
+        extent
+        for code in published.runs
+        if (extent := _cached_extent(grid_build_id=published.grid_build_id, region_code=code))
+        is not None
+    ]
+    if not extents:
+        return None
+    wests, souths, easts, norths = zip(*extents, strict=True)
+    return min(wests), min(souths), max(easts), max(norths)
+
+
+class _Columns(NamedTuple):
+    """Hold the forest squares of one run inside a view, one entry per square."""
+
+    corner_e: numpy.ndarray
+    corner_n: numpy.ndarray
+    values: numpy.ndarray
+    update_index: numpy.ndarray
+    calculated_at: list[str]
+    assessment_day: int
+
+
+def _run_columns(
+    *, published: PublishedMap, run: PublishedRun, target_date: date, area: Polygon,
+) -> _Columns | None:
+    """Read the squares of one run inside the area, at the day offset of that run."""
+    extent = _cached_extent(grid_build_id=published.grid_build_id, region_code=run.region_code)
+    if extent is not None and not area.intersects(_bbox_polygon(bbox=extent)):
+        return None
+    points = overview_points(run=run, summary=run_summary(run=run))
+    centre_e = points.corner_e + CELL_SIZE_M / 2
+    centre_n = points.corner_n + CELL_SIZE_M / 2
+    inside = shapely.contains_xy(area, centre_e, centre_n)
+    offset = _offset(run=run, target_date=target_date)
+    if 0 <= offset < points.values.shape[1]:
+        values = points.values[inside, offset].astype(numpy.int64)
+    else:
+        values = numpy.full(int(inside.sum()), NO_VALUE, dtype=numpy.int64)
+    return _Columns(
+        corner_e=points.corner_e[inside].astype(numpy.int64),
+        corner_n=points.corner_n[inside].astype(numpy.int64),
+        values=values,
+        update_index=points.update_index[inside].astype(numpy.int64),
+        calculated_at=points.calculated_at,
+        assessment_day=run.assessment_date.toordinal(),
     )
 
 
 def read_overview(
-    *, run: PublishedRun, target_date: date, bbox: Bbox, size: int,
+    *, published: PublishedMap, target_date: date, bbox: Bbox, size: int,
 ) -> CachedBody:
-    """Average the stored scores of forest squares into areas of size metres."""
+    """Average the stored scores of forest squares of every region into areas of size metres."""
     bbox = _normalized_bbox(bbox=bbox)
-    key = overview_key(run=run, target_date=target_date, bbox=bbox, size=size)
+    key = overview_key(published=published, target_date=target_date, bbox=bbox, size=size)
     stored = cached_body(key=key)
     if stored is not None:
         return stored
-    summary = run_summary(run=run)
     base = {
         "type": "FeatureCollection",
-        "run_id": run.run_id,
-        "assessment_date": summary.assessment_date,
+        "run_id": published.map_id,
+        "assessment_date": published.newest.assessment_date.isoformat(),
         "target_date": target_date.isoformat(),
         "area_size_m": size,
     }
     clipped = bbox
-    if summary.extent is not None:
+    union = _union_extent(published=published)
+    if union is not None:
         west, south, east, north = bbox
-        ext_west, ext_south, ext_east, ext_north = summary.extent
+        ext_west, ext_south, ext_east, ext_north = union
         clipped = (max(west, ext_west), max(south, ext_south), min(east, ext_east), min(north, ext_north))
         if clipped[0] >= clipped[2] or clipped[1] >= clipped[3]:
             return CachedBody(
                 content=json.dumps({**base, "features": []}, separators=(",", ":")).encode(),
                 key=key,
             )
-    points = overview_points(run=run, summary=summary)
-    offset = (target_date - run.assessment_date).days
-    centre_e = points.corner_e + CELL_SIZE_M / 2
-    centre_n = points.corner_n + CELL_SIZE_M / 2
-    inside = shapely.contains_xy(_bbox_polygon(bbox=clipped), centre_e, centre_n)
-    corner_e = points.corner_e[inside].astype(numpy.int64)
-    corner_n = points.corner_n[inside].astype(numpy.int64)
-    values = points.values[inside, offset].astype(numpy.int64)
-    update_index = points.update_index[inside].astype(numpy.int64)
+    area = _bbox_polygon(bbox=clipped)
+    parts = [
+        part
+        for run in published.runs.values()
+        if (part := _run_columns(published=published, run=run, target_date=target_date, area=area))
+        is not None
+    ]
+    stamps = sorted({stamp for part in parts for stamp in part.calculated_at})
+    rank_of = {stamp: rank for rank, stamp in enumerate(stamps)}
+    corner_e = numpy.concatenate([part.corner_e for part in parts] or [numpy.zeros(0, dtype=numpy.int64)])
+    corner_n = numpy.concatenate([part.corner_n for part in parts] or [numpy.zeros(0, dtype=numpy.int64)])
+    values = numpy.concatenate([part.values for part in parts] or [numpy.zeros(0, dtype=numpy.int64)])
+    update_rank = numpy.concatenate(
+        [
+            numpy.array([rank_of[stamp] for stamp in part.calculated_at], dtype=numpy.int64)[
+                part.update_index
+            ]
+            for part in parts
+        ]
+        or [numpy.zeros(0, dtype=numpy.int64)]
+    )
+    assessment_day = numpy.concatenate(
+        [numpy.full(len(part.values), part.assessment_day, dtype=numpy.int64) for part in parts]
+        or [numpy.zeros(0, dtype=numpy.int64)]
+    )
     scored = values != NO_VALUE
     cell_e = corner_e // size
     cell_n = corner_n // size
@@ -665,8 +830,11 @@ def read_overview(
     counts = numpy.bincount(group_of, minlength=len(keys))
     scored_counts = numpy.bincount(group_of, weights=scored, minlength=len(keys))
     sums = numpy.bincount(group_of, weights=numpy.where(scored, values, 0), minlength=len(keys))
-    oldest = numpy.full(len(keys), numpy.iinfo(numpy.int64).max)
-    numpy.minimum.at(oldest, group_of[scored], update_index[scored])
+    highest = numpy.iinfo(numpy.int64).max
+    oldest = numpy.full(len(keys), highest)
+    numpy.minimum.at(oldest, group_of[scored], update_rank[scored])
+    oldest_day = numpy.full(len(keys), highest)
+    numpy.minimum.at(oldest_day, group_of[scored], assessment_day[scored])
     features = []
     for index, group_key in enumerate(keys):
         east = int(group_key // 1_000_000) * size
@@ -692,10 +860,10 @@ def read_overview(
                     "target_date": target_date.isoformat(),
                     "state": "available" if complete else "unavailable",
                     "percentage": round(float(sums[index]) / scored_count) if complete else None,
-                    "assessment_date": summary.assessment_date if scored_count else None,
-                    "calculated_at": (
-                        points.calculated_at[int(oldest[index])] if scored_count else None
+                    "assessment_date": (
+                        date.fromordinal(int(oldest_day[index])).isoformat() if scored_count else None
                     ),
+                    "calculated_at": stamps[int(oldest[index])] if scored_count else None,
                     "forest_square_count": count,
                     "scored_square_count": scored_count,
                 },
@@ -706,7 +874,7 @@ def read_overview(
 
 @dataclass(frozen=True)
 class OverviewPoints:
-    """Hold one row per Tuscany forest square of a run, as compact arrays."""
+    """Hold one row per forest square of a run, as compact arrays."""
 
     corner_e: numpy.ndarray
     corner_n: numpy.ndarray
@@ -808,14 +976,16 @@ def store_detail(
 
 def run_id_for_update(*, update_id: UUID) -> str | None:
     """Return the published run, current or previous, whose cells hold the update."""
-    pointer = (
-        PublishedForecastRun.objects.filter(region_code=TUSCANY_ISTAT_CODE)
-        .values_list("current_run_id", "previous_run_id")
-        .first()
-    )
-    if pointer is None:
+    run_ids = [
+        value
+        for pointer in PublishedForecastRun.objects.order_by("region_code").values_list(
+            "current_run_id", "previous_run_id",
+        )
+        for value in pointer
+        if value is not None
+    ]
+    if not run_ids:
         return None
-    run_ids = [value for value in pointer if value is not None]
     found = set(
         ForecastRunCell.objects.filter(update__public_id=update_id, run_id__in=run_ids)
         .values_list("run_id", flat=True)
@@ -826,17 +996,13 @@ def run_id_for_update(*, update_id: UUID) -> str | None:
     return None
 
 
-def warm_published_map_cache(*, region_code: str = TUSCANY_ISTAT_CODE) -> dict[str, int]:
-    """Build the run summary and the overview points of the published Tuscany run into the cache.
+def warm_published_map_cache(*, region_code: str) -> dict[str, int]:
+    """Build the run summary and the overview points of the published run of one region.
 
-    Only Tuscany is accepted. Square and result tiles are built by the first request that needs them.
+    Square and result tiles are built by the first request that needs them.
     """
-    if region_code != TUSCANY_ISTAT_CODE:
-        raise MapCacheError(
-            f"The map cache covers only Tuscany, region code {TUSCANY_ISTAT_CODE}, "
-            f"not {region_code!r}."
-        )
-    run = published_run()
+    current = published_map()
+    run = current.runs.get(region_code) if current is not None else None
     if run is None:
         return {"squares": 0}
     summary = run_summary(run=run)

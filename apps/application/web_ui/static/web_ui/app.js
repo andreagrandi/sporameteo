@@ -2913,8 +2913,8 @@
       const loadedDetailMatches = stateData.detailData?.selection?.square_id === state.square
         && stateData.detailData.selection.target_date === state.date
         && String(stateData.detailData.selection.update_id || "") === String(state.updateId || "")
-        && (!stateData.detailData.selection.run_id || !stateData.info?.run?.run_id
-          || stateData.detailData.selection.run_id === stateData.info.run.run_id);
+        && (!stateData.detailData.selection.run_id || !stateData.info?.runs?.length
+          || stateData.info.runs.some((item) => item.run_id === stateData.detailData.selection.run_id));
       // The same square and date with a new update or run keeps the panel until the replacement arrives.
       const sameSquareAndDate = stateData.detailData?.selection?.square_id === state.square
         && stateData.detailData.selection.target_date === state.date;

@@ -81,14 +81,14 @@ msgstr "Stima sperimentale:"
 msgid "this percentage is unvalidated. It does not mean your personal chance of finding porcini."
 msgstr "questa percentuale non è stata validata. Non indica la tua probabilità personale di trovare porcini."
 
-msgid "Free experimental tool for Tuscan forests"
-msgstr "Strumento sperimentale gratuito per i boschi toscani"
+msgid "Free experimental tool for Italian forests"
+msgstr "Strumento sperimentale gratuito per i boschi italiani"
 
 msgid "Hear the forest breathe. Find where conditions for porcini look favourable."
 msgstr "Ascolta il respiro del bosco. Scopri dove le condizioni per i porcini sono favorevoli."
 
-msgid "SporaMeteo combines the <strong class=&quot;text-on-surface font-semibold&quot;>Copernicus</strong> forest map with <strong class=&quot;text-on-surface font-semibold&quot;>Open-Meteo</strong> modelled weather to estimate the chance that porcini are growing in 500 metre forest squares across Tuscany. Other regions are coming soon. No sign-up, no advertising, free."
-msgstr "SporaMeteo unisce la carta forestale <strong class=\"text-on-surface font-semibold\">Copernicus</strong> con il meteo modellato di <strong class=\"text-on-surface font-semibold\">Open-Meteo</strong> per stimare la probabilità che crescano porcini in quadrati di bosco da 500 metri, in Toscana. Altre regioni arriveranno presto. Senza registrazione, senza pubblicità, gratuito."
+msgid "SporaMeteo combines the <strong class=&quot;text-on-surface font-semibold&quot;>Copernicus</strong> forest map with <strong class=&quot;text-on-surface font-semibold&quot;>Open-Meteo</strong> modelled weather to estimate the chance that porcini are growing in 500 metre forest squares across Italy. No sign-up, no advertising, free."
+msgstr "SporaMeteo unisce la carta forestale <strong class=\"text-on-surface font-semibold\">Copernicus</strong> con il meteo modellato di <strong class=\"text-on-surface font-semibold\">Open-Meteo</strong> per stimare la probabilità che crescano porcini in quadrati di bosco da 500 metri, in tutta Italia. Senza registrazione, senza pubblicità, gratuito."
 
 msgid "Explore the interactive map"
 msgstr "Esplora la mappa interattiva"
@@ -120,8 +120,11 @@ msgstr "Copertura"
 msgid "Tuscany"
 msgstr "Toscana"
 
-msgid "Other regions coming soon"
-msgstr "Altre regioni in arrivo"
+msgid "Italy"
+msgstr "Italia"
+
+msgid "All regions"
+msgstr "Tutte le regioni"
 
 msgid "Abetone, Tuscany"
 msgstr "Abetone, Toscana"
@@ -318,14 +321,11 @@ msgstr "I quadrati senza stima, per dati mancanti o per meno del 10%% di bosco, 
 msgid "Examples from the latest update"
 msgstr "Esempi dall'ultimo aggiornamento"
 
-msgid "Forest areas of Tuscany"
-msgstr "Aree boschive della Toscana"
+msgid "Forest areas of Italy"
+msgstr "Aree boschive d'Italia"
 
 msgid "One fixed square in each of four forest areas, with its estimate for today. The numbers change with every nightly update."
 msgstr "Un quadrato fisso in ciascuna di quattro zone boscose, con la sua stima per oggi. I numeri cambiano a ogni aggiornamento notturno."
-
-msgid "Open the map of Tuscany"
-msgstr "Apri la mappa della Toscana"
 
 msgid "Tuscan Apennines"
 msgstr "Appennino Toscano"
@@ -333,32 +333,32 @@ msgstr "Appennino Toscano"
 msgid "Abetone, Doganaccia, Pian di Novello"
 msgstr "Abetone, Doganaccia, Pian di Novello"
 
-msgid "Tuscany, Garfagnana"
-msgstr "Toscana, Garfagnana"
+msgid "Emilia-Romagna, Borgotaro"
+msgstr "Emilia-Romagna, Borgotaro"
 
-msgid "Garfagnana and Apuan Alps"
-msgstr "Garfagnana e Alpi Apuane"
+msgid "Borgotaro"
+msgstr "Borgotaro"
 
-msgid "Orecchiella, Pania della Croce, Careggine"
-msgstr "Orecchiella, Pania della Croce, Careggine"
+msgid "Broadleaf forest near Borgotaro. Its porcini carry the protected geographic name IGP."
+msgstr "Bosco di latifoglie vicino a Borgotaro. I suoi porcini hanno il nome geografico protetto IGP."
 
-msgid "Tuscany, Casentino"
-msgstr "Toscana, Casentino"
+msgid "Calabria, Sila"
+msgstr "Calabria, Sila"
 
-msgid "Casentino Forests"
-msgstr "Foreste Casentinesi"
+msgid "Sila"
+msgstr "Sila"
 
-msgid "Badia Prataglia, Camaldoli, La Verna"
-msgstr "Badia Prataglia, Camaldoli, La Verna"
+msgid "Mixed forest on the Sila, a high plateau of pine and beech forests."
+msgstr "Bosco misto sulla Sila, un altopiano con boschi di pino e di faggio."
 
-msgid "Tuscany, Amiata"
-msgstr "Toscana, Amiata"
+msgid "Trentino, Val di Fiemme"
+msgstr "Trentino, Val di Fiemme"
 
-msgid "Mount Amiata"
-msgstr "Monte Amiata"
+msgid "Val di Fiemme"
+msgstr "Val di Fiemme"
 
-msgid "Abbadia San Salvatore, Santa Fiora, Vetta Amiata"
-msgstr "Abbadia San Salvatore, Santa Fiora, Vetta Amiata"
+msgid "Conifer forest in Val di Fiemme, a valley with large spruce forests."
+msgstr "Bosco di conifere in Val di Fiemme, una valle con grandi boschi di abete rosso."
 
 msgid "Square"
 msgstr "Quadrato"
@@ -420,8 +420,8 @@ msgstr "Mappa gratuita"
 msgid "Ready for your next trip into the forest?"
 msgstr "Pronto per la tua prossima uscita nel bosco?"
 
-msgid "Check the rain of recent days, the weather of the day and the estimate for today and the next seven days, across Tuscany. Free, no sign-up."
-msgstr "Controlla la pioggia dei giorni scorsi, il meteo del giorno e la stima per oggi e per i prossimi sette giorni, in tutta la Toscana. Gratuito, senza registrazione."
+msgid "Check the rain of recent days, the weather of the day and the estimate for today and the next seven days, across Italy. Free, no sign-up."
+msgstr "Controlla la pioggia dei giorni scorsi, il meteo del giorno e la stima per oggi e per i prossimi sette giorni, in tutta Italia. Gratuito, senza registrazione."
 
 msgid "Start SporaMeteo"
 msgstr "Avvia SporaMeteo"
@@ -441,8 +441,8 @@ msgstr "Prima di andare nel bosco"
 msgid "SporaMeteo estimates are experimental and do not guarantee that porcini or other species will fruit. Mountain and forest environments carry real dangers. Only eat mushrooms whose safety has been checked by ASL mycology inspectors. Check the rules and permits of your region."
 msgstr "Le stime di SporaMeteo sono sperimentali e non garantiscono la fruttificazione del porcino o di altre specie. L'ambiente montano e forestale comporta pericoli oggettivi. Raccogli solo funghi la cui commestibilità sia stata controllata dagli ispettori micologici dell'ASL. Controlla le regole e i permessi della tua regione."
 
-msgid "A free map with experimental estimates of porcini growth in the forests of Tuscany."
-msgstr "Mappa gratuita con stime sperimentali sulla crescita dei porcini nei boschi della Toscana."
+msgid "A free map with experimental estimates of porcini growth in the forests of Italy."
+msgstr "Mappa gratuita con stime sperimentali sulla crescita dei porcini nei boschi d'Italia."
 
 msgid "Free, no account, no advertising"
 msgstr "Gratuito, senza account, senza pubblicità"
@@ -465,8 +465,8 @@ msgstr "Perché SporaMeteo è diverso"
 msgid "Foraging ethics"
 msgstr "Etica di raccolta"
 
-msgid "Map of Tuscany"
-msgstr "Mappa della Toscana"
+msgid "Map"
+msgstr "Mappa"
 
 msgid "Account and favorites"
 msgstr "Account e preferiti"

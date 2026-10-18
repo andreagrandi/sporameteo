@@ -523,9 +523,7 @@ def publish_forecast_run(*, run_id: uuid.UUID | str) -> ForecastRun:
             completed_at=run.completed_at or now,
             published_at=now,
         )
-        # The map serves only Tuscany until issue #155, so other regions have nothing to warm.
-        if run.region_code == TUSCANY_ISTAT_CODE:
-            transaction.on_commit(lambda: _queue_map_cache_warming(region_code=run.region_code))
+        transaction.on_commit(lambda: _queue_map_cache_warming(region_code=run.region_code))
     return ForecastRun.objects.get(id=run.id)
 
 

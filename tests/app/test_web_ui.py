@@ -137,28 +137,28 @@ def test_english_landing_keeps_translated_sample_and_probability_scale() -> None
 
 
 @pytest.mark.django_db
-def test_italian_landing_names_tuscany_and_other_regions_coming_soon() -> None:
+def test_italian_landing_names_italy_and_all_regions() -> None:
     response = Client(HTTP_ACCEPT_LANGUAGE="it-IT,it;q=0.9").get(path="/")
     body = response.content.decode()
 
     assert response.status_code == 200
-    assert "Toscana" in body
-    assert "Altre regioni in arrivo" in body
-    assert "Altre regioni arriveranno presto" in body
-    for text in ("tutta Italia", "tutta l'Italia", "Sicilia", "Sardegna"):
+    assert "tutta Italia" in body
+    assert "Tutte le regioni" in body
+    assert "Emilia-Romagna, Borgotaro" in body
+    for text in ("in arrivo", "arriveranno presto", "Garfagnana", "Casentino", "Amiata"):
         assert text not in body
 
 
 @pytest.mark.django_db
-def test_english_landing_names_tuscany_and_other_regions_coming_soon() -> None:
+def test_english_landing_names_italy_and_all_regions() -> None:
     response = Client(HTTP_ACCEPT_LANGUAGE="en-GB,en;q=0.9").get(path="/")
     body = response.content.decode()
 
     assert response.status_code == 200
-    assert "Tuscany" in body
-    assert "Other regions coming soon" in body
-    assert "Other regions are coming soon" in body
-    for text in ("all Italy", "Sicily", "Sardinia"):
+    assert "across Italy" in body
+    assert "All regions" in body
+    assert "Trentino, Val di Fiemme" in body
+    for text in ("coming soon", "Garfagnana", "Casentino", "Amiata"):
         assert text not in body
 
 
@@ -377,8 +377,9 @@ def test_landing_shows_no_percentage_and_a_reason_without_a_published_run(
 @pytest.mark.django_db(transaction=True)
 @pytest.mark.parametrize("language", ["en-GB,en;q=0.9", "it-IT,it;q=0.9"])
 def test_landing_cards_show_the_values_the_squares_api_returns(
-    map_fixture: dict[str, object], monkeypatch: pytest.MonkeyPatch, language: str,  # noqa: F811
+    map_fixture: dict[str, object], monkeypatch: pytest.MonkeyPatch, settings, language: str,  # noqa: F811
 ) -> None:
+    settings.SPORAMETEO_FOREST_BUILD_VERSION = map_fixture["build"].version
     cells = map_fixture["cells"]
     ids = [cell.grid_build_cell.cell.cell_id for cell in cells]
     publish_run(fixture=map_fixture, updates={"44.00,11.00": map_fixture["new_update"]})
@@ -388,7 +389,7 @@ def test_landing_cards_show_the_values_the_squares_api_returns(
     monkeypatch.setattr(
         landing_examples,
         "AREA_SQUARES",
-        {"apennines": ids[0], "garfagnana": ids[3], "casentino": ids[1], "amiata": ids[2]},
+        {"apennines": ids[0], "borgotaro": ids[3], "sila": ids[1], "fiemme": ids[2]},
     )
     client = Client(HTTP_ACCEPT_LANGUAGE=language)
     api = client.get(
@@ -406,6 +407,6 @@ def test_landing_cards_show_the_values_the_squares_api_returns(
     assert int(hero.group(1)) == by_id[ids[0]]["percentage"]
     assert int(area.group(1)) == by_id[ids[0]]["percentage"]
     assert f"/map/?square={ids[0]}&amp;date={today.isoformat()}" in body
-    for key in ("garfagnana", "casentino", "amiata"):
+    for key in ("borgotaro", "sila", "fiemme"):
         assert f'data-landing-area="{key}"' not in body
     assert "data-landing-older" in body

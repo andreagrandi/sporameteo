@@ -33,9 +33,9 @@ logger = logging.getLogger(__name__)
 HERO_SQUARE = "500m_E4372500_N2337000"
 AREA_SQUARES = {
     "apennines": HERO_SQUARE,
-    "garfagnana": "500m_E4351000_N2343500",
-    "casentino": "500m_E4472000_N2299500",
-    "amiata": "500m_E4454500_N2199000",
+    "borgotaro": "500m_E4305000_N2372000",
+    "sila": "500m_E4880500_N1827500",
+    "fiemme": "500m_E4453500_N2578500",
 }
 CACHE_KEY = "landing-examples-v1:{run_id}:{first}:{last}"
 CACHE_SECONDS = 6 * 60 * 60
@@ -51,13 +51,13 @@ def _centre(*, square_id: str) -> tuple[float, float]:
     return latitude, longitude
 
 
-def _read_square(*, run: published.PublishedRun, square_id: str, target_date: date) -> dict[str, Any]:
+def _read_square(*, current: published.PublishedMap, square_id: str, target_date: date) -> dict[str, Any]:
     """Read one square for one date through the same cached read the map uses."""
     latitude, longitude = _centre(square_id=square_id)
     margin = CENTER_MARGIN_DEGREES
     try:
         body = published.read_squares(
-            run=run,
+            published=current,
             target_date=target_date,
             bbox=(longitude - margin, latitude - margin, longitude + margin, latitude + margin),
             max_squares=4,
@@ -114,13 +114,13 @@ def _hero_facts(*, detail: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _collect(*, run: published.PublishedRun, first: date, last: date) -> dict[str, Any]:
+def _collect(*, current: published.PublishedMap, first: date, last: date) -> dict[str, Any]:
     """Read the raw numbers of every example square for the first and last date."""
     squares: dict[str, Any] = {}
     for square_id in dict.fromkeys(AREA_SQUARES.values()):
-        today_properties = _read_square(run=run, square_id=square_id, target_date=first)
+        today_properties = _read_square(current=current, square_id=square_id, target_date=first)
         last_properties = (
-            _read_square(run=run, square_id=square_id, target_date=last) if last != first else today_properties
+            _read_square(current=current, square_id=square_id, target_date=last) if last != first else today_properties
         )
         latitude, longitude = _centre(square_id=square_id)
         squares[square_id] = {
@@ -139,14 +139,14 @@ def _collect(*, run: published.PublishedRun, first: date, last: date) -> dict[st
     return squares
 
 
-def _raw_examples(*, run: published.PublishedRun, first: date, last: date) -> dict[str, Any]:
+def _raw_examples(*, current: published.PublishedMap, first: date, last: date) -> dict[str, Any]:
     """Return the cached raw numbers of the run, reading them once per run."""
-    key = CACHE_KEY.format(run_id=run.run_id, first=first.isoformat(), last=last.isoformat())
+    key = CACHE_KEY.format(run_id=current.map_id, first=first.isoformat(), last=last.isoformat())
     cache = published.map_cache()
     stored = cache.get(key)
     if stored is not None:
         return stored
-    squares = _collect(run=run, first=first, last=last)
+    squares = _collect(current=current, first=first, last=last)
     hero = squares[HERO_SQUARE]
     if hero["first"] is None or hero["facts"] is not None:
         cache.set(key, squares, timeout=CACHE_SECONDS)
@@ -287,9 +287,9 @@ def _hero(*, raw: dict[str, Any], first: date, last: date, today: date, language
 def landing_examples(*, language: str) -> dict[str, Any]:
     """Return the hero card, the four area cards and the older-result notice."""
     today = weather_services.italian_assessment_date()
-    run = published.published_run()
-    dates = run.available_dates(today=today) if run is not None else []
-    if run is None or not dates:
+    current = published.published_map()
+    dates = current.available_dates(today=today) if current is not None else []
+    if current is None or not dates:
         reason = gettext("No estimate has been published yet.")
         return {
             "hero": {"has_estimate": False, "reason": reason, "map_url": "/map/"},
@@ -299,7 +299,7 @@ def landing_examples(*, language: str) -> dict[str, Any]:
             "older_notice": "",
         }
     first, last = dates[0], dates[-1]
-    raw = _raw_examples(run=run, first=first, last=last)
+    raw = _raw_examples(current=current, first=first, last=last)
     areas = {}
     for key, square_id in AREA_SQUARES.items():
         square = raw[square_id]
@@ -313,8 +313,8 @@ def landing_examples(*, language: str) -> dict[str, Any]:
             ),
         }
     older_notice = (
-        labels_for(language)["detail_old_result"].format(date=format_date(run.assessment_date, language=language))
-        if run.assessment_date < today
+        labels_for(language)["detail_old_result"].format(date=format_date(current.newest.assessment_date, language=language))
+        if current.newest.assessment_date < today
         else ""
     )
     return {

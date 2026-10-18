@@ -10,10 +10,10 @@ unvalidated. It does not measure a visitor's chance of finding a mushroom.
 
 | Route | Purpose |
 | --- | --- |
-| `GET /info` | Today's Italian date, the published run, its dates, the Tuscany coverage and map limits. |
+| `GET /info` | Today's Italian date, the published map, the run of each region, the dates, the coverage of the published regions and map limits. |
 | `GET /forest-layer` | The simplified national forest polygons, with no estimates or weather request. |
-| `GET /squares?bbox=west,south,east,north&target_date=YYYY-MM-DD` | Squares and stored estimates of the published run for the visible map. |
-| `GET /estimate-overview?bbox=west,south,east,north&target_date=YYYY-MM-DD` | Average scores of the published run in larger areas, for views wider than the square limit. |
+| `GET /squares?bbox=west,south,east,north&target_date=YYYY-MM-DD` | Squares and stored estimates of the published regions for the visible map. |
+| `GET /estimate-overview?bbox=west,south,east,north&target_date=YYYY-MM-DD` | Average scores of the published regions in larger areas, for views wider than the square limit. |
 | `GET /areas/{square_id}?target_date=YYYY-MM-DD&update_id=UUID` | One exact saved estimate and the inputs behind it. Omit the UUID only to classify a square with no selected update. |
 
 Coordinates use WGS84 longitude and latitude. Square IDs identify the national
@@ -21,26 +21,38 @@ Coordinates use WGS84 longitude and latitude. Square IDs identify the national
 run from today onwards. Details accept the eight original dates of the
 requested update, including a retained previous assessment.
 
-## Published run
+## Published runs
 
-The map, overview and details read one published Tuscany run, prepared at
-night by `run_tuscany_forecast`. A page request never fetches weather, never
-downloads habitat data and never calculates an estimate. The run pointer is
-read from the database on every request, and it changes only when a new run
-is published. A failed or incomplete run leaves the previous run on the map
-with its real assessment date. A value for 16 October always comes from the
-day of the run that is 16 October, so a day-old run is never moved forward.
+The map, overview and details read the published run of every region, prepared
+at night by `run_tuscany_forecast`. A page request never fetches weather,
+never downloads habitat data and never calculates an estimate. The run
+pointers are read from the database on every request, and a pointer changes
+only when a new run of its region is published. A region whose run was made
+from another forest build than the configured one counts as not published,
+because its results point at the squares of the other build. A failed or
+incomplete run leaves the previous run of its region on the map with its real
+assessment date. A value for 16 October always comes from the day of the run
+that is 16 October, so a day-old run is never moved forward.
+
+Each forest square uses the run of the region that owns it. A weather cell on
+a border has a different update in each region, so a square never takes the
+update of its neighbour region. The regions can have different assessment
+dates. The `map_id` is a short identifier derived from the region codes and
+the run IDs of all published regions. It changes whenever any region
+publishes, and the responses return it as `run_id`.
 
 Finished responses and the data behind them are kept in the `map` cache, a
 database table shared by every process. Its entries do not expire. They are
-keyed by run ID, target date, view or 10 km tile, and forest build, so a new
-run uses new keys and never mixes with old entries.
+keyed by `map_id` or run ID, target date, view or 10 km tile, and forest
+build, so a new run uses new keys and never mixes with old entries.
 `SPORAMETEO_MAP_CACHE_MAX_ENTRIES` bounds the table, 50,000 entries by default.
 An evicted entry is rebuilt from the database. After each publication a
-background task prepares the run summary and the overview points of the new
-run, and `manage.py warm_published_map_cache` does the same by hand. Both
-accept only Tuscany. The square and result tiles of a 10 km area are built by
-the first request that needs them, which takes 7 to 16 ms per tile.
+background task prepares the run summary and the overview points of the
+published region, and `manage.py warm_published_map_cache` does the same by
+hand. The command takes `--region-code` with one published region code, or
+`all`, its default, which warms every published region in turn. The square and
+result tiles of a 10 km area are built by the first request that needs them,
+which takes 7 to 16 ms per tile.
 
 ## Metadata and forest layer
 
@@ -51,19 +63,23 @@ curl --compressed http://127.0.0.1:8010/api/v1/forest-layer
 
 The metadata supplies `today`, `target_dates`, `run`, `coverage`,
 `forest_build_version`, `max_width_km`, `max_height_km`, `max_squares` and
-`forest_layer`. `run` holds `run_id`, `assessment_date`, `published_at` and
-the eight `target_dates` of the published run, or `null` when no run is
-published. The top-level `target_dates` are the run dates from today
-onwards, so a run published yesterday offers seven dates. Without a run they
-are today and the next seven days. The layer descriptor contains its URL, SHA-256 and compressed
+`forest_layer`. `run` describes the whole map. Its `run_id` is the `map_id`,
+its `assessment_date` and eight `target_dates` are those of the newest run,
+and its `published_at` is the latest publication. It is `null` when no run is
+published. `runs` lists the run of each published region, sorted by region
+code, with `region_code`, `run_id`, `assessment_date` and `published_at`. It
+is empty when no run is published. The top-level `target_dates` are the dates
+of the newest run from today onwards, so a run published yesterday offers
+seven dates. Without a run they are today and the next seven days. The layer descriptor contains its URL, SHA-256 and compressed
 and uncompressed sizes. The `attributions` list contains the ISTAT boundaries,
 Copernicus forest, Copernicus terrain when its configured completed build uses
 the same grid, and Open-Meteo. Each item has `name`, `credit`, `licence` and
 `url`. The website shows each `credit` and `licence` and links source text to
 `url`. Missing values are `null` when an older build did not store that field.
-Coverage is the bounding box of the Tuscany region of the grid, or the
-national grid's bounding box when the grid has no Tuscany region. It is not a
-promise that every point inside the box has estimates.
+Coverage is the bounding box of all published regions of the grid. Without a
+published run it is the bounding box of the Tuscany region, or the national
+grid's bounding box when the grid has no Tuscany region. It is not a promise
+that every point inside the box has estimates.
 
 The forest layer is the immutable artifact recorded by the completed forest
 build. Its only per-polygon value is `forest_share`. The endpoint checks its
@@ -79,7 +95,8 @@ curl --compressed \
 
 Replace the date with one returned by `/info`. A successful response is a
 GeoJSON `FeatureCollection` with `run_id`, `assessment_date`, `target_date`,
-`square_count` and `features`.
+`square_count` and `features`. The top-level `run_id` is the `map_id` and the
+top-level `assessment_date` is the one of the newest run.
 Every feature has its square ID, WGS84 polygon and these properties. This is
 an illustrative available-result excerpt:
 
@@ -102,9 +119,11 @@ an illustrative available-result excerpt:
 ```
 
 The response also includes `cell_id`. Copy the feature ID, target date and
-update ID together when opening details. Every square of one response comes
-from the same run and assessment date. Each weather cell has its own update
-ID and calculation time.
+update ID together when opening details. Every square carries the assessment
+date of the run of its own region, and a view across a regional border can
+hold two dates. A target date outside the eight days of a region's run gives
+that region's squares no percentage. Each weather cell has its own update ID
+and calculation time.
 `weather_cell` contains the stored weather cell centre for the forest square.
 It is `null` when either coordinate is missing. Use these coordinates directly
 instead of deriving a centre from the displayed polygon.
@@ -117,8 +136,8 @@ instead of deriving a centre from the displayed polygon.
 
 For example, no forest has `state: "noforest"` and `reason: "noforest"`.
 A missing old-rain input has `state: "unavailable"` and
-`reason: "older_rain"`. A forest square that the published run does not
-cover, such as one outside Tuscany, has `state: "unavailable"`,
+`reason: "older_rain"`. A forest square whose region has no usable published
+run, such as a region that has not published yet, has `state: "unavailable"`,
 `reason: "outside_prepared_area"` and
 `message_key: "estimate.outside_prepared_area"`. None of these means zero
 percent. The current method normally produces values from 5 through 95. The
@@ -142,8 +161,8 @@ before north. A broader view returns HTTP 400 before any database read:
 }
 ```
 
-A view that misses the Tuscany coverage returns 400 `outside_coverage`
-without reading squares. Without a published run, `/squares` and
+A view that touches the extent of no published region returns 400
+`outside_coverage` without reading squares. Without a published run, `/squares` and
 `/estimate-overview` return 503 `forecast_unavailable`.
 
 A permitted view reads its squares from cached 10 km tiles. Missing tiles are
@@ -153,6 +172,15 @@ cache entry. Responses support gzip. Map and forest-layer responses use
 `Cache-Control: no-cache`, so a browser must revalidate them. Their ETags
 change with the run, date and bounds, or with the artifact. Full weather histories and contributing facts belong to details
 and do not repeat for every polygon.
+
+The overview keeps its points per region run, so the warm-up memory stays per
+region. A request combines the points of the runs whose extent meets the view.
+It takes each run's value at that run's own day offset, and it clips the view
+to the extent of all published regions. The regions do not overlap, because
+each run holds only the squares of its own region. The top-level `run_id` is
+the `map_id` and the top-level `assessment_date` is the one of the newest run.
+The `assessment_date` of an area is the oldest date among the runs of its
+scored squares, and its `calculated_at` is the oldest calculation time.
 
 ## Selected-area details
 
@@ -246,13 +274,13 @@ also helps inspect an API response.
 | 400 | `missing_parameter`, `invalid_bbox`, `invalid_date`, `invalid_update_id`, `invalid_square_id` | Malformed or missing input. |
 | 400 | `unsupported_date` | The map target is not a date of the published run from today onwards. `details.available_dates` lists the accepted dates. |
 | 400 | `view_too_large`, `square_limit_exceeded` | Zoom in before requesting estimates. |
-| 400 | `outside_coverage` | The view misses the Tuscany coverage or holds no grid square. |
+| 400 | `outside_coverage` | The view is outside the regions with published estimates or holds no grid square. |
 | 404 | `square_unknown` | The square does not belong to the requested update's forest build. |
 | 409 | `update_square_mismatch` | The square and update refer to different weather cells. |
 | 409 | `no_forest`, `missing_forest_data`, `outside_prepared_area` | The square has no selected saved estimate. No unrelated weather is attached. |
 | 410 | `update_expired` | The requested update UUID is no longer available. Refresh the map. |
 | 503 | `forest_build_unavailable`, `forest_layer_unavailable` | The configured completed build or checked artifact is unavailable. |
-| 503 | `forecast_unavailable` | No Tuscany run is published yet. |
+| 503 | `forecast_unavailable` | No region has a published run yet. |
 
 A deleted update returns this shape, with the requested UUID in `details`:
 
