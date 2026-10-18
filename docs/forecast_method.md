@@ -1,19 +1,85 @@
 # Experimental porcini forecast method
 
-This document defines `porcini-experimental-v3` in
-`src/sporameteo/forecast_method.py`. It calculates one whole percentage for one
-500 m square and one Italian local date. The percentage is an experimental,
-unvalidated estimate. It is not a measured probability and it is not a chance
-that a visitor will find a mushroom.
+This document describes the experimental porcini method in
+`src/sporameteo/forecast_method.py` and `src/sporameteo/moisture_method.py`.
+It calculates one whole percentage for one 500 m square and one Italian local
+date. The percentage is an experimental, unvalidated estimate. It is not a
+measured probability and it is not a chance that a visitor will find a
+mushroom.
 
-New estimate updates use v3. The code keeps v1 and v2 so saved updates retain
-their original percentages and explanations. v3 adds host-tree information
-to the unchanged v2 weather and forest calculation described below.
+New estimate updates use `porcini-experimental-v5`, described in the next two
+sections. The code keeps v1 to v4 so saved updates retain their original
+percentages and explanations. The sections after them describe v1 to v3.
 
 The event is visible fruiting bodies from the four-species porcini group,
 *Boletus edulis*, *B. aereus*, *B. reticulatus* and *B. pinophilus*, somewhere
 in the selected 500 m square on the Italian local target date. The event key is
 `visible_porcini_fruiting_bodies_in_500m_cell_on_italian_date`.
+
+## Version 4
+
+v4 reads the 30 days before the target date. Each day has rain, mean air
+temperature and reference evapotranspiration, which is the water a short,
+well watered grass would lose to the air that day. The temperature is moved to
+the height of the square at 0.65 deg C per 100 m.
+
+```text
+water starts at 40 mm on the first of the 30 days
+each day: water = min(80, max(0, 0.95 * water + min(rain, 25) - drying))
+v4 drying = 0.5 * evapotranspiration
+water factor of a day = min(1, water / 40)
+moisture = min(last day's water factor, mean water factor of the last 7 days)
+temperature = mean band score of the last 7 days
+whole_percentage = ROUND_HALF_UP(5 + 90 * moisture * temperature)
+```
+
+The band score is 0 at 0 deg C, 0.1 at 5 deg C, 0.4 at 8 deg C, 1 from 12 to
+18 deg C, 0.7 at 22 deg C, 0.3 at 25 deg C and 0 at 30 deg C, with straight
+lines between them. Squares with less than a tenth of forest get no estimate,
+as decision D17 requires. Host trees are shown but do not change the score.
+
+The temperature bands follow the owner's document named in decision D21. The
+other numbers are project choices recorded in
+`reports/mvp/pistoia_formula_reassessment.md`: the 40 mm start, the 95
+percent kept each day, the 25 mm daily limit, the 80 mm maximum, the half of
+the evapotranspiration and the 40 mm full level.
+
+## Version 5
+
+v5 changes one rule of v4. The daily drying can be at most 0.5 mm:
+
+```text
+v5 drying = min(0.5 * evapotranspiration, 0.5)
+```
+
+| Rule | Value | Source |
+| --- | ---: | --- |
+| Highest daily drying of the store | 0.5 mm | Paulsen and Weiler, 2026, table 5. |
+
+[Paulsen and Weiler](https://doi.org/10.5194/hess-30-4305-2026) weighed the
+top 15 cm of the forest floor, litter and the soil under it, in boxes at
+three beech and spruce woods of the Black Forest, 415 to 1,163 m high. From
+May 2024 to August 2025 the floor lost 0.51 to 0.54 mm a day on days without
+rain at all three sites. The authors summarise it as about 0.5 mm a day. A
+fully closed canopy kept the summer rate low, at most 0.16 mm an hour.
+
+v4 lost half the evapotranspiration, which is 2 to 3 mm a day in a southern
+summer. At that rate a 10 mm storm was gone in about four days. v5 keeps the v4 rule
+when it dries less than 0.5 mm, which happens on days with less than 1 mm of
+evapotranspiration, mostly in winter. On those days v5 equals v4. On every
+other day v5 dries less, so a v5 score is never lower than v4 for the same
+weather.
+
+Limits of the source:
+
+- The boxes held no living roots, so the measure leaves out the water that
+  trees draw from the top soil.
+- The study covers a wet period in German woods, not a dry southern summer.
+- The 95 percent kept each day still drains 2 mm a day from a store of 40 mm.
+  That rule is unchanged and remains a project choice.
+
+`reports/water_store_v5.md` compares v4 and v5 at 11 places, using finds only
+to check the change. No find set the number.
 
 ## Host trees in v3
 
@@ -144,8 +210,8 @@ returns a frozen `ForecastResult` with these fields:
 The calculation does no network or database work. The estimate update service
 reads the stored weather, terrain and forest records and passes them in.
 
-For v4 the service calls `calculate_v4_scores` instead, once per weather cell
-and target date. In v4 the moisture part of the score depends only on the
+For v4 and v5 the service calls `calculate_v4_scores` instead, once per
+weather cell and target date. In both versions the moisture part of the score depends only on the
 weather of the cell, so it is worked out once. Each square then gets only its
 altitude step and the final score. The percentages and missing reasons are
 the same as from `calculate_forecast`, without the facts. It is about 9 times

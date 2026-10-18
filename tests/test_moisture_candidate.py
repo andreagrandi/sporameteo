@@ -9,7 +9,7 @@ from datetime import date, timedelta
 import pytest
 
 from tools.forecast_checks.moisture_candidate import CandidateResult, WeatherDay, calculate_candidate
-from sporameteo.forecast_method import CURRENT_METHOD, METHOD_V4
+from sporameteo.forecast_method import CURRENT_METHOD, METHOD_V4, METHOD_V5
 
 
 TARGET = date(2026, 10, 12)
@@ -101,4 +101,30 @@ def test_forest_eligibility_and_current_method_are_preserved() -> None:
     assert result.score is None
     assert result.unavailable_reason == "below_forest_threshold"
     assert calculate_candidate(target_date=TARGET, days=days, forest_share=0.1).score is not None
-    assert CURRENT_METHOD == METHOD_V4
+    assert CURRENT_METHOD == METHOD_V5
+
+
+def score_v5(*, days: tuple[WeatherDay, ...]) -> CandidateResult:
+    return calculate_candidate(
+        target_date=TARGET, days=days, forest_share=0.624, maximum_drying_mm=METHOD_V5.maximum_drying_mm,
+    )
+
+
+def test_v5_keeps_more_water_than_v4_when_et0_is_high() -> None:
+    days = weather(rain=(0,) * 16 + (15,) * 7 + (0,) * 7, temperature=15, et0=6)
+    v4 = score(days=days)
+    v5 = score_v5(days=days)
+    assert v5.retained_water_mm > v4.retained_water_mm
+    assert v5.score > v4.score
+
+
+def test_v5_equals_v4_when_the_drying_cap_never_binds() -> None:
+    days = weather(rain=(0,) * 16 + (15,) * 7 + (0,) * 7, et0=1)
+    assert score_v5(days=days) == score(days=days)
+
+
+@pytest.mark.parametrize("et0", [0, 0.5, 1, 3, 8])
+@pytest.mark.parametrize("rain", [(0,) * 30, (5,) * 30, (0,) * 23 + (15,) * 5 + (0,) * 2])
+def test_v5_never_scores_below_v4_on_the_same_weather(et0: float, rain: tuple[float, ...]) -> None:
+    days = weather(rain=rain, et0=et0)
+    assert score_v5(days=days).score >= score(days=days).score

@@ -1,4 +1,4 @@
-description = "Calculate the current method's estimate for every day of the last 12 months at 10 forest places outside Tuscany, from the Open-Meteo files alone, and set it next to porcini finds on GBIF and iNaturalist."
+description = "Calculate the v4 and v5 estimates for every day of the last 12 months at 10 forest places outside Tuscany and one near Pistoia, from the Open-Meteo files alone, and set it next to porcini finds on GBIF and iNaturalist."
 seed = 42
 time_limit_minutes = 30
 
@@ -98,3 +98,10 @@ region = "Sardinia"
 latitude = 40.11
 longitude = 9.27
 note = ""
+
+[[settings.places]]
+name = "Pistoia"
+region = "Tuscany"
+latitude = 43.95
+longitude = 10.85
+note = "Home area of D11, added for #171"
