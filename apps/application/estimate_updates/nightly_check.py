@@ -1,4 +1,4 @@
-"""Check that today's Tuscany forecast run is published, and retry the step that stopped."""
+"""Check that today's forecast runs of the nightly regions are published, and retry the step that stopped."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from django_tasks_db.models import DBTaskResult
 
 from weather_on_demand.models import ScheduledWeatherRun, WeatherFetchBatch
 from weather_on_demand.services import reopen_weather_fetch, start_scheduled_weather_run
-from weather_requests.eligibility import TUSCANY_ISTAT_CODE
+from weather_requests.eligibility import ALL_REGIONS, nightly_region_codes, nightly_run_key
 
 from .models import ForecastRun
 from .tasks import queue_tuscany_forecast
@@ -47,28 +47,56 @@ def _task_row(*, run: ScheduledWeatherRun) -> DBTaskResult | None:
     return DBTaskResult.objects.filter(id=run.forecast_task_id).first()
 
 
-def _forecast_failure_message(*, run: ScheduledWeatherRun, task: DBTaskResult | None, failed: ForecastRun | None) -> str:
+def _region_codes(*, run_key: str) -> tuple[str, ...]:
+    if run_key == ALL_REGIONS:
+        return nightly_region_codes(value=run_key, forest_build_version=settings.SPORAMETEO_FOREST_BUILD_VERSION)
+    return tuple(run_key.split(","))
+
+
+def _forecast_failure_message(
+    *,
+    run: ScheduledWeatherRun,
+    task: DBTaskResult | None,
+    failed: list[ForecastRun],
+    unpublished: tuple[str, ...],
+) -> str:
     parts = ["The weather was ready, but the forecast run failed."]
+    several = "," in run.region_code or run.region_code == ALL_REGIONS
+    if several:
+        parts.append(f"Regions not published: {', '.join(unpublished)}.")
     if run.reason_code == "forecast_queue_failure":
         parts.append(f"The forecast task could not be queued: {run.full_reason}")
-    if failed is not None and failed.failure_reason:
-        parts.append(f"Forecast run reason: {failed.failure_reason}")
+    for item in failed:
+        if item.failure_reason:
+            label = f"Region {item.region_code} forecast run reason" if several else "Forecast run reason"
+            parts.append(f"{label}: {item.failure_reason}")
     if task is not None and task.status == "FAILED":
         tail = "\n".join(str(task.traceback or "").strip().splitlines()[-_TRACEBACK_LINES:])
         parts.append(f"Task error: {task.exception_class_path}\n{tail}".rstrip())
     return "\n".join(parts)
 
 
-def check_nightly_update(*, assessment_date: date, region_code: str = TUSCANY_ISTAT_CODE) -> NightlyCheckResult:
-    """Read the stored run states and say whether the forecast run is published.
+def _unpublished_regions(*, codes: tuple[str, ...], assessment_date: date) -> tuple[str, ...]:
+    published = set(
+        ForecastRun.objects.filter(
+            region_code__in=codes,
+            assessment_date=assessment_date,
+            status=ForecastRun.Status.PUBLISHED,
+        ).values_list("region_code", flat=True)
+    )
+    return tuple(code for code in codes if code not in published)
 
-    The reason code names the step that stopped when it is not.
+
+def check_nightly_update(*, assessment_date: date, region_code: str | None = None) -> NightlyCheckResult:
+    """Read the stored run states and say whether every region has a published forecast run.
+
+    The reason code names the step that stopped when it is not. The default regions come
+    from SPORAMETEO_NIGHTLY_REGIONS, and the weather run is found by their run key.
     """
-    if ForecastRun.objects.filter(
-        region_code=region_code,
-        assessment_date=assessment_date,
-        status=ForecastRun.Status.PUBLISHED,
-    ).exists():
+    region_code = nightly_run_key(value=region_code or settings.SPORAMETEO_NIGHTLY_REGIONS)
+    codes = _region_codes(run_key=region_code)
+    unpublished = _unpublished_regions(codes=codes, assessment_date=assessment_date)
+    if not unpublished:
         return NightlyCheckResult(reason=PUBLISHED, message=f"The {assessment_date} forecast run is published.")
     run = ScheduledWeatherRun.objects.filter(region_code=region_code, assessment_date=assessment_date).first()
     if run is None:
@@ -100,19 +128,21 @@ def check_nightly_update(*, assessment_date: date, region_code: str = TUSCANY_IS
             reason=NOT_FINISHED,
             message=f"The weather run is completed and the forecast task is still {task.status}.",
         )
-    failed = ForecastRun.objects.filter(
-        region_code=region_code,
-        assessment_date=assessment_date,
-        status=ForecastRun.Status.FAILED,
-    ).first()
+    failed = list(
+        ForecastRun.objects.filter(
+            region_code__in=unpublished,
+            assessment_date=assessment_date,
+            status=ForecastRun.Status.FAILED,
+        ).order_by("region_code", "created_at")
+    )
     if (
         run.reason_code == "forecast_queue_failure"
         or (task is not None and task.status == "FAILED")
-        or failed is not None
+        or failed
     ):
         return NightlyCheckResult(
             reason=FORECAST_FAILED,
-            message=_forecast_failure_message(run=run, task=task, failed=failed),
+            message=_forecast_failure_message(run=run, task=task, failed=failed, unpublished=unpublished),
         )
     return NightlyCheckResult(
         reason=NOT_FINISHED,
@@ -134,12 +164,13 @@ def _requeue_forecast(*, run_id: uuid.UUID, assessment_date: date, region_code: 
 def retry_nightly_update(
     *,
     assessment_date: date,
-    region_code: str = TUSCANY_ISTAT_CODE,
+    region_code: str | None = None,
 ) -> NightlyCheckResult:
     """Retry the step that stopped and return the state found before the retry.
 
     It never sends an email.
     """
+    region_code = nightly_run_key(value=region_code or settings.SPORAMETEO_NIGHTLY_REGIONS)
     result = check_nightly_update(assessment_date=assessment_date, region_code=region_code)
     if result.is_published:
         logger.info("Nightly retry for %s: the run is published, nothing to retry.", assessment_date)

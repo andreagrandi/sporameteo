@@ -1,4 +1,4 @@
-"""Plan or run a read of the Open-Meteo files that stores 38 days of weather for Tuscany."""
+"""Plan or run a read of the Open-Meteo files that stores 38 days of weather for the chosen regions."""
 
 import json
 from argparse import ArgumentParser
@@ -7,7 +7,7 @@ from datetime import date
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
-from weather_requests.eligibility import TUSCANY_ISTAT_CODE, WeatherEligibilityError, tuscany_weather_cells
+from weather_requests.eligibility import WeatherEligibilityError, nightly_run_key, weather_cells_for_run_key
 from weather_summaries.file_weather import plan_file_weather, store_file_weather
 
 from ...services import italian_assessment_date
@@ -24,7 +24,11 @@ class Command(BaseCommand):
             default=None,
             help="Italian date to prepare, default today in Europe/Rome.",
         )
-        parser.add_argument("--region-code", default=TUSCANY_ISTAT_CODE, help="Only 09, Tuscany, is allowed.")
+        parser.add_argument(
+            "--region-code",
+            default=str(settings.SPORAMETEO_NIGHTLY_REGIONS),
+            help="Region codes such as 09,08, or all. Default from SPORAMETEO_NIGHTLY_REGIONS.",
+        )
         parser.add_argument(
             "--forest-build-version",
             default=str(getattr(settings, "SPORAMETEO_FOREST_BUILD_VERSION", "")),
@@ -38,12 +42,13 @@ class Command(BaseCommand):
         if not version:
             raise CommandError("Set SPORAMETEO_FOREST_BUILD_VERSION or pass --forest-build-version.")
         try:
-            cells = tuscany_weather_cells(forest_build_version=version, region_code=options["region_code"])
+            region_code = nightly_run_key(value=options["region_code"])
+            cells = weather_cells_for_run_key(forest_build_version=version, run_key=region_code)
             plan = plan_file_weather(cells=cells, assessment_date=assessment_date)
             if options["dry_run"]:
                 self._write_plan(plan=plan.as_dict(), as_json=options["json"])
                 return
-            read = store_file_weather(cells=cells, assessment_date=assessment_date, region_code=options["region_code"])
+            read = store_file_weather(cells=cells, assessment_date=assessment_date, region_code=region_code)
         except (WeatherEligibilityError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
         summary = {

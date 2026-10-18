@@ -92,6 +92,8 @@ SPORAMETEO_TERRAIN_BUILD_VERSION = os.getenv(
 SPORAMETEO_FOREST_BUILD_VERSION = os.getenv(
     "SPORAMETEO_FOREST_BUILD_VERSION", "italy-forest-copernicus-2018-v1"
 )
+# The regions of the nightly chain: all, or ISTAT region codes such as 09,08.
+SPORAMETEO_NIGHTLY_REGIONS = os.getenv("SPORAMETEO_NIGHTLY_REGIONS", "09")
 SPORAMETEO_PLACE_SEARCH_URL = os.getenv(
     "SPORAMETEO_PLACE_SEARCH_URL", "https://photon.komoot.io/api"
 )

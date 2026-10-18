@@ -19,6 +19,7 @@ from estimate_updates.nightly_check import (
     check_nightly_update,
     retry_nightly_update,
 )
+from estimate_updates.forecast_runs import process_forecast_run, start_forecast_run
 from estimate_updates.tasks import queue_tuscany_forecast
 from tests.app.test_forecast_runs import (  # noqa: F401
     _publish_day,
@@ -160,3 +161,51 @@ def test_retry_does_nothing_when_the_run_is_published(tuscany) -> None:
     assert result.reason == PUBLISHED
     assert DBTaskResult.objects.count() == tasks_before
     assert not ScheduledWeatherRun.objects.exists()
+
+
+# Several regions in one night
+
+
+def test_two_regions_are_published_only_when_both_are(tuscany) -> None:
+    _publish_day(day=DAY)
+
+    assert check_nightly_update(assessment_date=DAY, region_code="09,12").reason == NO_WEATHER_RUN
+
+    process_forecast_run(run_id=start_forecast_run(assessment_date=DAY, region_code="12").id)
+
+    assert check_nightly_update(assessment_date=DAY, region_code="12,09").reason == PUBLISHED
+
+
+def test_the_message_names_the_region_that_failed_and_its_reason(tuscany) -> None:
+    _publish_day(day=DAY)
+    ScheduledWeatherRun.objects.create(
+        region_code="09,12",
+        assessment_date=DAY,
+        forest_build_version=tuscany.forest.version,
+        status=ScheduledWeatherRun.Status.COMPLETED,
+        mode=ScheduledWeatherRun.Mode.INITIAL,
+        reason_code="ready",
+    )
+
+    def broken(*, inputs: object) -> object:
+        raise ValueError("The Lazio calculation failed on purpose.")
+
+    run = start_forecast_run(assessment_date=DAY, region_code="12")
+    process_forecast_run(run_id=run.id, calculator=broken)
+    result = check_nightly_update(assessment_date=DAY, region_code="09,12")
+
+    assert result.reason == FORECAST_FAILED
+    assert "Regions not published: 12." in result.message
+    assert "Region 12 forecast run reason" in result.message
+    assert "failed on purpose" in result.message
+
+
+def test_the_default_regions_come_from_the_setting(tuscany, settings) -> None:
+    _publish_day(day=DAY)
+    settings.SPORAMETEO_NIGHTLY_REGIONS = "09,12"
+
+    assert check_nightly_update(assessment_date=DAY).reason == NO_WEATHER_RUN
+
+    settings.SPORAMETEO_NIGHTLY_REGIONS = "09"
+
+    assert check_nightly_update(assessment_date=DAY).reason == PUBLISHED

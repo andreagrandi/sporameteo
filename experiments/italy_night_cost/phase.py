@@ -70,12 +70,12 @@ def square_counts(*, forest_build: Any, region_code: str) -> dict[str, int]:
 
 def choose_cells(*, region: str, forest_build_version: str, limit: int) -> list[Any]:
     """Return the weather cells of the region sorted by key, cut to the limit when it is above zero."""
-    from weather_requests.eligibility import tuscany_weather_cells, weather_cells_for_forest_build
+    from weather_requests.eligibility import weather_cells_for_forest_build, weather_cells_for_regions
 
     if region == "all":
         cells = weather_cells_for_forest_build(build_version=forest_build_version)
     else:
-        cells = tuscany_weather_cells(forest_build_version=forest_build_version, region_code=region)
+        cells = weather_cells_for_regions(forest_build_version=forest_build_version, region_codes=[region])
     ordered = sorted(cells, key=lambda cell: cell.key)
     return ordered[:limit] if limit > 0 else ordered
 
@@ -427,7 +427,7 @@ def run_compare(*, args: argparse.Namespace) -> dict[str, Any]:
     from estimate_updates.services import calculate_estimate_update
     from sporameteo.forecast_method import calculate_forecast
     from sporameteo.weather.policy import PIPELINE_VERSION
-    from weather_requests.eligibility import tuscany_weather_cells
+    from weather_requests.eligibility import weather_cells_for_regions
     from weather_summaries.models import WeatherSnapshot
 
     assessment_date = date.fromisoformat(args.assessment_date)
@@ -437,7 +437,7 @@ def run_compare(*, args: argparse.Namespace) -> dict[str, Any]:
             assessment_date=assessment_date, pipeline_version=PIPELINE_VERSION, status=WeatherSnapshot.Status.READY
         ).values_list("cell_key", "id")
     )
-    tuscany = sorted(cell.key for cell in tuscany_weather_cells(forest_build_version=forest.version, region_code=TUSCANY_CODE))
+    tuscany = sorted(cell.key for cell in weather_cells_for_regions(forest_build_version=forest.version, region_codes=[TUSCANY_CODE]))
     others = sorted(key for key in snapshots if key not in set(tuscany))
     chosen = [(key, TUSCANY_CODE) for key in tuscany if key in snapshots]
     chosen += [(key, "") for key in sorted(random.Random(args.seed).sample(others, min(args.random_cells, len(others))))]

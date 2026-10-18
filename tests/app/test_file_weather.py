@@ -364,7 +364,7 @@ def test_failed_chunk_file_ends_the_read_as_failed_and_writes_no_row(tmp_path: P
 
 @pytest.mark.django_db
 def test_dry_run_prints_megabytes_and_cell_count_and_writes_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("weather_on_demand.management.commands.store_file_weather.tuscany_weather_cells", lambda **kwargs: WEATHER_CELLS)
+    monkeypatch.setattr("weather_on_demand.management.commands.store_file_weather.weather_cells_for_run_key", lambda **kwargs: WEATHER_CELLS)
     output = StringIO()
 
     call_command("store_file_weather", "--dry-run", "--assessment-date=2026-10-10", "--forest-build-version=test", stdout=output)

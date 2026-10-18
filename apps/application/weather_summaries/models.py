@@ -188,7 +188,7 @@ class FileWeatherRead(models.Model):
 
     id = models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True)
     assessment_date = models.DateField()
-    region_code = models.CharField(max_length=8)
+    region_code = models.CharField(max_length=100)
     run_time = models.DateTimeField(null=True, blank=True)
     started_at = models.DateTimeField()
     finished_at = models.DateTimeField(null=True, blank=True)

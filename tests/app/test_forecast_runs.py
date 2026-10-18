@@ -38,7 +38,6 @@ from estimate_updates.models import (
     TuscanyInputSet,
 )
 from estimate_updates.services import (
-    EstimateUpdateError,
     calculate_and_publish_estimates,
     calculate_estimate_update,
     cleanup_estimate_updates,
@@ -390,26 +389,16 @@ def test_run_uses_the_current_formula_unchanged(tuscany: SimpleNamespace) -> Non
     }
 
 
-@pytest.mark.parametrize("region_code", ["12", "", "9"])
-def test_other_regions_are_rejected_by_plan_start_and_calculation(
+@pytest.mark.parametrize("region_code", ["99", "", "9"])
+def test_unknown_regions_are_rejected_by_plan_and_start(
     tuscany: SimpleNamespace, region_code: str,
 ) -> None:
-    snapshots = _weather(day=DAY)
+    _weather(day=DAY)
 
     with pytest.raises(ForecastRunError):
         plan_forecast_run(assessment_date=DAY, region_code=region_code)
     with pytest.raises(ForecastRunError):
         start_forecast_run(assessment_date=DAY, region_code=region_code)
-    if region_code:
-        with pytest.raises(EstimateUpdateError, match="only for Tuscany"):
-            calculate_estimate_update(
-                snapshot_id=snapshots[FIRST_CELL].id,
-                cell_key=FIRST_CELL,
-                assessment_date=DAY,
-                forest_build_version=tuscany.forest.version,
-                terrain_build_version=tuscany.terrain.version,
-                region_code=region_code,
-            )
     assert ForecastRun.objects.count() == 0
     assert EstimateUpdate.objects.count() == 0
 
@@ -858,7 +847,7 @@ def test_dry_run_command_prints_the_plan_and_writes_nothing(tuscany: SimpleNames
 
     text = out.getvalue()
     assert "no data written" in text
-    assert "Tuscany forest squares: 3" in text
+    assert "Forest squares: 3" in text
     assert ForecastRun.objects.count() == 0
     assert EstimateUpdate.objects.count() == 0
     assert PublishedForecastRun.objects.count() == 0
@@ -887,13 +876,97 @@ def test_command_runs_and_publishes_then_reports_the_run(tuscany: SimpleNamespac
     assert report["estimate_storage_bytes"] > 0
 
 
-def test_command_rejects_other_regions_and_missing_weather(tuscany: SimpleNamespace) -> None:
+def test_command_rejects_unknown_regions_and_missing_weather(tuscany: SimpleNamespace) -> None:
     _weather(day=DAY)
 
-    with pytest.raises(CommandError, match="only Tuscany"):
-        call_command("run_tuscany_forecast", "--assessment-date", DAY.isoformat(), "--region-code", "12", "--dry-run")
-    with pytest.raises(CommandError, match="only Tuscany"):
-        call_command("run_tuscany_forecast", "--assessment-date", DAY.isoformat(), "--region-code", "12")
+    with pytest.raises(CommandError, match="not in grid build"):
+        call_command("run_tuscany_forecast", "--assessment-date", DAY.isoformat(), "--region-code", "99", "--dry-run")
+    with pytest.raises(CommandError, match="not in grid build"):
+        call_command("run_tuscany_forecast", "--assessment-date", DAY.isoformat(), "--region-code", "99")
     with pytest.raises(CommandError, match="no ready weather"):
         call_command("run_tuscany_forecast", "--assessment-date", (DAY + timedelta(days=1)).isoformat())
     assert ForecastRun.objects.count() == 0
+
+
+# Several regions in one night
+
+
+def _count_warm_ups(*, monkeypatch: pytest.MonkeyPatch) -> list[dict[str, str]]:
+    calls: list[dict[str, str]] = []
+    monkeypatch.setattr(
+        "estimate_updates.tasks.warm_published_map_cache_task",
+        SimpleNamespace(enqueue=lambda **kwargs: calls.append(kwargs)),
+    )
+    return calls
+
+
+def test_forecast_task_publishes_every_region_and_a_rerun_skips_them(
+    tuscany: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _count_warm_ups(monkeypatch=monkeypatch)
+    _weather(day=DAY)
+
+    tuscany_forecast_task.call(region_code="12,09", assessment_date=DAY.isoformat())
+
+    assert published_forecast_run(region_code="09").run.assessment_date == DAY
+    assert published_forecast_run(region_code="12").run.assessment_date == DAY
+    assert calls == [{"region_code": "09"}]
+    run_ids = set(ForecastRun.objects.values_list("id", flat=True))
+
+    def forbidden(**kwargs: object) -> None:
+        raise AssertionError("A published region must be skipped.")
+
+    monkeypatch.setattr("estimate_updates.forecast_runs.start_forecast_run", forbidden)
+    tuscany_forecast_task.call(region_code="09,12", assessment_date=DAY.isoformat())
+
+    assert set(ForecastRun.objects.values_list("id", flat=True)) == run_ids
+
+
+def test_a_failed_region_keeps_its_last_run_and_the_other_region_publishes(
+    tuscany: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _count_warm_ups(monkeypatch=monkeypatch)
+    _weather(day=DAY)
+    tuscany_forecast_task.call(region_code="09,12", assessment_date=DAY.isoformat())
+    lazio_before = PublishedForecastRun.objects.get(region_code="12").current_run_id
+    next_day = DAY + timedelta(days=1)
+    _weather(day=next_day)
+    real = calculate_estimate_update
+
+    def fail_for_lazio(**kwargs: object) -> object:
+        if kwargs["region_code"] == "12":
+            raise ValueError("The Lazio calculation failed on purpose.")
+        return real(**kwargs)
+
+    monkeypatch.setattr("estimate_updates.forecast_runs.calculate_estimate_update", fail_for_lazio)
+
+    with pytest.raises(ForecastRunError, match="1 of 2 regions failed. 12: .*failed on purpose"):
+        tuscany_forecast_task.call(region_code="09,12", assessment_date=next_day.isoformat())
+
+    assert published_forecast_run(region_code="09").run.assessment_date == next_day
+    assert PublishedForecastRun.objects.get(region_code="12").current_run_id == lazio_before
+    assert ForecastRun.objects.get(region_code="12", assessment_date=next_day).status == ForecastRun.Status.FAILED
+
+    monkeypatch.setattr("estimate_updates.forecast_runs.calculate_estimate_update", real)
+    tuscany_forecast_task.call(region_code="09,12", assessment_date=next_day.isoformat())
+
+    assert published_forecast_run(region_code="12").run.assessment_date == next_day
+
+
+def test_publishing_another_region_queues_no_map_warm_up(
+    tuscany: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _count_warm_ups(monkeypatch=monkeypatch)
+    _weather(day=DAY)
+
+    run = process_forecast_run(run_id=start_forecast_run(assessment_date=DAY, region_code="12").id)
+
+    assert run.status == ForecastRun.Status.PUBLISHED
+    assert calls == []
+
+
+def test_a_forecast_run_rejects_a_region_that_is_not_in_the_grid(tuscany: SimpleNamespace) -> None:
+    _weather(day=DAY)
+
+    with pytest.raises(ForecastRunError, match="not in grid build"):
+        start_forecast_run(assessment_date=DAY, region_code="99")

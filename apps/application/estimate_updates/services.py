@@ -38,7 +38,7 @@ from national_forest.models import ForestBuild, ForestCell
 from sporameteo.moisture_method import WeatherDay
 from sporameteo.weather.policy import PIPELINE_VERSION
 from national_terrain.models import TerrainBuild, TerrainCell
-from weather_requests.eligibility import TUSCANY_ISTAT_CODE, canonical_cell_key
+from weather_requests.eligibility import canonical_cell_key
 from weather_summaries.models import WeatherSnapshot, WeatherSnapshotDay, WeatherSummary
 
 from .contracts import (
@@ -584,10 +584,6 @@ def calculate_estimate_update(
     region_code: str = "",
 ) -> PreparedEstimateUpdate:
     """Calculate all eligible squares and validate rows before any insert."""
-    if region_code and region_code != TUSCANY_ISTAT_CODE:
-        raise EstimateUpdateError(
-            f"Estimates run only for Tuscany, region code {TUSCANY_ISTAT_CODE}, not {region_code!r}."
-        )
     assessment_date = _require_date(assessment_date, name="assessment_date")
     terrain_version = terrain_build_version or _terrain_build_version()
     if batch_size <= 0:

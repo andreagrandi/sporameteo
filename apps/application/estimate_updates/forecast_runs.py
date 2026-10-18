@@ -1,4 +1,4 @@
-"""Calculate every Tuscany estimate for one date and publish the finished run as a whole.
+"""Calculate every estimate of one region for one date and publish the finished run as a whole.
 
 A run lists its weather cells and input versions first. Readers see the previous
 published run until the next run passes validation and replaces the pointer.
@@ -24,11 +24,12 @@ from django.utils import timezone
 from sporameteo.forecast_method import CURRENT_METHOD, ForecastResult
 from sporameteo.weather.policy import PIPELINE_VERSION
 from national_forest.models import ForestBuild, ForestCell
+from national_grid.models import GridRegion
 from national_terrain.models import TerrainBuild
 from weather_requests.eligibility import (
     TUSCANY_ISTAT_CODE,
     WeatherEligibilityError,
-    tuscany_weather_cells,
+    weather_cells_for_regions,
     weather_cell,
 )
 from weather_summaries.models import WeatherDaily, WeatherSnapshot, WeatherSnapshotDay
@@ -92,7 +93,7 @@ class ForecastRunPlan:
 
     @property
     def square_count(self) -> int:
-        """Return the number of Tuscany forest squares across all cells."""
+        """Return the number of forest squares across all cells."""
         return sum(cell.square_count for cell in self.cells)
 
     @property
@@ -130,16 +131,15 @@ class PublishedRunRead:
     updates: dict[str, uuid.UUID]
 
 
-def _require_tuscany(*, region_code: str) -> None:
-    if region_code != TUSCANY_ISTAT_CODE:
+def _require_region(*, forest_build: ForestBuild, region_code: str) -> None:
+    if not GridRegion.objects.filter(build_id=forest_build.grid_build_id, istat_code=region_code).exists():
         raise ForecastRunError(
-            f"Forecast runs cover only Tuscany, region code {TUSCANY_ISTAT_CODE}, "
-            f"not {region_code!r}."
+            f"Region code {region_code!r} is not in grid build {forest_build.grid_build.version!r}."
         )
 
 
 def _square_counts(*, forest_build: ForestBuild, region_code: str) -> dict[str, int]:
-    """Return the Tuscany forest squares of each weather cell, keyed by cell key."""
+    """Return the forest squares of each weather cell, keyed by cell key."""
     rows = (
         ForestCell.objects.filter(
             build=forest_build,
@@ -188,14 +188,14 @@ def _input_set(*, forest: ForestBuild, terrain: TerrainBuild, region_code: str, 
 
 
 def _plan(*, assessment_date: date, region_code: str) -> tuple[ForecastRunPlan, ForestBuild, TerrainBuild, TuscanyInputSet | None]:
-    _require_tuscany(region_code=region_code)
     forest, terrain = _builds()
+    _require_region(forest_build=forest, region_code=region_code)
     trees = host_tree_source_version()
     input_set = _input_set(forest=forest, terrain=terrain, region_code=region_code, trees=trees)
     try:
-        weather_cells = tuscany_weather_cells(
+        weather_cells = weather_cells_for_regions(
             forest_build_version=forest.version,
-            region_code=region_code,
+            region_codes=[region_code],
         )
     except WeatherEligibilityError as exc:
         raise ForecastRunError(str(exc)) from exc
@@ -403,7 +403,7 @@ def process_forecast_run(
 
 def validate_forecast_run(*, run: ForecastRun) -> int:
     """Check coverage, dates and input identities and return the cells with source gaps."""
-    _require_tuscany(region_code=run.region_code)
+    _require_region(forest_build=run.forest_build, region_code=run.region_code)
     problems: list[str] = []
     expected_dates = [value.isoformat() for value in _target_dates(assessment_date=run.assessment_date)]
     if run.target_dates != expected_dates:
@@ -411,9 +411,9 @@ def validate_forecast_run(*, run: ForecastRun) -> int:
     try:
         current = {
             cell.key
-            for cell in tuscany_weather_cells(
+            for cell in weather_cells_for_regions(
                 forest_build_version=run.forest_build.version,
-                region_code=run.region_code,
+                region_codes=[run.region_code],
             )
         }
     except WeatherEligibilityError as exc:
@@ -487,7 +487,6 @@ def publish_forecast_run(*, run_id: uuid.UUID | str) -> ForecastRun:
         run = ForecastRun.objects.select_for_update().select_related(
             "forest_build", "terrain_build",
         ).get(id=uuid.UUID(str(run_id)))
-        _require_tuscany(region_code=run.region_code)
         pointer = PublishedForecastRun.objects.select_for_update().filter(
             region_code=run.region_code,
         ).select_related("current_run").first()
@@ -524,7 +523,9 @@ def publish_forecast_run(*, run_id: uuid.UUID | str) -> ForecastRun:
             completed_at=run.completed_at or now,
             published_at=now,
         )
-        transaction.on_commit(lambda: _queue_map_cache_warming(region_code=run.region_code))
+        # The map serves only Tuscany until issue #155, so other regions have nothing to warm.
+        if run.region_code == TUSCANY_ISTAT_CODE:
+            transaction.on_commit(lambda: _queue_map_cache_warming(region_code=run.region_code))
     return ForecastRun.objects.get(id=run.id)
 
 

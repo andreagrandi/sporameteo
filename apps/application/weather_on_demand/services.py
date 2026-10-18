@@ -35,7 +35,12 @@ from sporameteo.weather.policy import (
     PIPELINE_VERSION,
     history_endpoint,
 )
-from weather_requests.eligibility import TUSCANY_ISTAT_CODE, WeatherCell, tuscany_weather_cells
+from weather_requests.eligibility import (
+    TUSCANY_ISTAT_CODE,
+    WeatherCell,
+    nightly_run_key,
+    weather_cells_for_run_key,
+)
 from weather_requests.planning import (
     DEFAULT_MODEL,
     MAX_LOCATIONS,
@@ -1844,9 +1849,10 @@ def start_scheduled_weather_run(
 
     The worker reads the files, and a run with fallback batches keeps planning them.
     """
-    cells = tuscany_weather_cells(
+    region_code = nightly_run_key(value=region_code)
+    cells = weather_cells_for_run_key(
         forest_build_version=forest_build_version,
-        region_code=region_code,
+        run_key=region_code,
     )
     now = _clock_now(clock)
     with transaction.atomic():
@@ -1972,11 +1978,11 @@ def _missing_from_files(*, run: ScheduledWeatherRun, cell_keys: Sequence[str]) -
 
 
 def _finish_scheduled_run(*, run: ScheduledWeatherRun, now: datetime) -> ScheduledWeatherRun:
-    """Mark a run completed when every Tuscany cell has a snapshot, otherwise failed."""
+    """Mark a run completed when every weather cell of its regions has a snapshot, otherwise failed."""
     try:
-        cells = tuscany_weather_cells(
+        cells = weather_cells_for_run_key(
             forest_build_version=run.forest_build_version,
-            region_code=run.region_code,
+            run_key=run.region_code,
         )
     except ValueError as exc:
         status, reason_code, full_reason = ScheduledWeatherRun.Status.FAILED, "scope_error", str(exc)
@@ -2095,9 +2101,9 @@ def run_scheduled_weather_step(
     run.refresh_from_db()
     if run.file_read_id is None or run.file_read.status == FileWeatherRead.Status.FAILED:
         try:
-            cells = tuscany_weather_cells(
+            cells = weather_cells_for_run_key(
                 forest_build_version=run.forest_build_version,
-                region_code=run.region_code,
+                run_key=run.region_code,
             )
         except ValueError:
             return _finish_scheduled_run(run=run, now=now)
