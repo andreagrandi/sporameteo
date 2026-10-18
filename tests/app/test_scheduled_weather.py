@@ -38,7 +38,9 @@ from weather_on_demand.models import (
 from weather_requests.eligibility import (
     TUSCANY_ISTAT_CODE,
     WeatherEligibilityError,
-    tuscany_weather_cells,
+    nightly_region_codes,
+    nightly_run_key,
+    weather_cells_for_regions,
     weather_cell,
 )
 from weather_requests.models import WeatherRequest, WeatherRequestAttempt
@@ -430,7 +432,7 @@ def test_scope_helper_matches_the_tuscany_code_used_by_the_subset_tool() -> None
 
 
 def test_tuscany_cells_count_each_shared_weather_cell_once(forest) -> None:
-    cells = tuscany_weather_cells(forest_build_version=forest["version"])
+    cells = weather_cells_for_regions(forest_build_version=forest["version"], region_codes=["09"])
 
     assert [cell.key for cell in cells] == [FIRST_CELL, SECOND_CELL]
     assert ForestCell.objects.filter(
@@ -440,11 +442,90 @@ def test_tuscany_cells_count_each_shared_weather_cell_once(forest) -> None:
     ).count() == 3
 
 
-@pytest.mark.parametrize("region_code", ["12", "", "9", "IT"])
-def test_non_tuscany_regions_are_rejected(region_code: str, forest) -> None:
+def _add_square(*, forest: dict[str, str], region_code: str, latitude: float, longitude: float) -> None:
+    """Add one forest square of a region with this weather cell centre."""
+    build = ForestBuild.objects.get(version=forest["version"])
+    grid = build.grid_build
+    count = GridBuildCell.objects.filter(build=grid).count()
+    west = 1_000 + count * 500
+    cell = GridCell.objects.create(
+        cell_id=f"500m_E{west}_N1000-{grid.version}",
+        corner_e=west,
+        corner_n=1_000,
+        geometry=_square(west=west, south=1_000),
+    )
+    membership = GridBuildCell.objects.create(
+        build=grid,
+        cell=cell,
+        chunk=GridChunk.objects.get(build=grid),
+        owner_region=GridRegion.objects.get(build=grid, istat_code=region_code),
+        land_geometry=MultiPolygon([_square(west=west, south=1_000)]),
+        land_share=1.0,
+    )
+    ForestCell.objects.create(
+        build=build,
+        grid_build_cell=membership,
+        chunk=ForestChunk.objects.get(build=build),
+        total_pixel_count=100,
+        valid_pixel_count=100,
+        forest_pixel_count=80,
+        broadleaf_pixel_count=80,
+        conifer_pixel_count=0,
+        unclassifiable_pixel_count=0,
+        outside_pixel_count=0,
+        valid_coverage=1.0,
+        coverage_quality="high",
+        forest_share=0.8,
+        broadleaf_share=1.0,
+        leaf_type=ForestCell.LeafType.BROADLEAF,
+        is_forest=True,
+        weather_latitude=latitude,
+        weather_longitude=longitude,
+    )
+
+
+def test_two_regions_share_a_border_weather_cell_and_one_run_stores_it_once(forest) -> None:
+    _add_square(forest=forest, region_code="12", latitude=43.6, longitude=11.2)
+    cells = weather_cells_for_regions(forest_build_version=forest["version"], region_codes=["12", "09"])
+    assert [cell.key for cell in cells] == ["41.90,12.50", FIRST_CELL, SECOND_CELL]
+
     clock = _clock()
-    with pytest.raises(WeatherEligibilityError, match="only Tuscany"):
-        tuscany_weather_cells(forest_build_version=forest["version"], region_code=region_code)
+    run = weather_services.start_scheduled_weather_run(
+        assessment_date=DAY, region_code="12,09", forest_build_version=forest["version"], clock=clock
+    )
+    run = _drive(run=run, clock=clock, transport=_Transport(clock=clock))
+
+    assert run.region_code == "09,12"
+    assert run.status == ScheduledWeatherRun.Status.COMPLETED
+    assert ScheduledWeatherRun.objects.count() == 1
+    stored = WeatherSnapshot.objects.filter(assessment_date=DAY)
+    assert sorted(stored.values_list("cell_key", flat=True)) == ["41.90,12.50", FIRST_CELL, SECOND_CELL]
+
+
+def test_region_setting_accepts_all_and_sorts_a_comma_list(forest) -> None:
+    version = forest["version"]
+
+    assert nightly_region_codes(value="all", forest_build_version=version) == ("09", "12")
+    assert nightly_region_codes(value="12, 09,12", forest_build_version=version) == ("09", "12")
+    assert nightly_run_key(value="all") == "all"
+    assert nightly_run_key(value="12,09") == "09,12"
+    assert nightly_run_key(value="09") == "09"
+
+
+@pytest.mark.parametrize("value", ["99", "09,99", "IT", "9"])
+def test_region_setting_rejects_unknown_codes(value: str, forest) -> None:
+    with pytest.raises(WeatherEligibilityError, match="Unknown region codes"):
+        nightly_region_codes(value=value, forest_build_version=forest["version"])
+
+
+def test_region_setting_rejects_an_empty_value() -> None:
+    with pytest.raises(WeatherEligibilityError, match="at least one region"):
+        nightly_run_key(value=" , ")
+
+
+@pytest.mark.parametrize("region_code", ["99", "", "9", "IT"])
+def test_unknown_regions_are_rejected(region_code: str, forest) -> None:
+    clock = _clock()
     with pytest.raises(WeatherEligibilityError):
         weather_services.start_scheduled_weather_run(
             assessment_date=DAY,
@@ -456,9 +537,9 @@ def test_non_tuscany_regions_are_rejected(region_code: str, forest) -> None:
     assert WeatherRequest.objects.count() == 0
 
 
-def test_command_rejects_other_regions_and_unknown_forest_builds(forest) -> None:
-    with pytest.raises(CommandError, match="only Tuscany"):
-        call_command("refresh_tuscany_weather", "--dry-run", "--region-code=12", stdout=io.StringIO())
+def test_command_rejects_unknown_regions_and_unknown_forest_builds(forest) -> None:
+    with pytest.raises(CommandError, match="Unknown region codes"):
+        call_command("refresh_tuscany_weather", "--dry-run", "--region-code=99", stdout=io.StringIO())
     with pytest.raises(CommandError, match="No forest build"):
         call_command(
             "refresh_tuscany_weather", "--dry-run", "--forest-build-version=missing", stdout=io.StringIO()
@@ -501,6 +582,26 @@ def test_dry_run_prints_the_plan_and_writes_nothing(forest) -> None:
     assert _table_counts() == before
 
 
+def test_dry_run_counts_the_cells_of_two_regions_once(forest) -> None:
+    _add_square(forest=forest, region_code="12", latitude=43.6, longitude=11.2)
+    before = _table_counts()
+    out = io.StringIO()
+
+    call_command(
+        "refresh_tuscany_weather",
+        "--dry-run",
+        "--region-code=all",
+        f"--assessment-date={DAY.isoformat()}",
+        stdout=out,
+    )
+
+    text = out.getvalue()
+    assert "Weather cells: 3, already ready for the date: 0" in text
+    assert re.search(r"Files to read: \d+(\.\d+)? MB", text)
+    assert "API calls left: 0 counted calls, 0 HTTP requests" in text
+    assert _table_counts() == before
+
+
 def test_dry_run_shows_the_api_calls_a_fallback_run_has_left(forest) -> None:
     clock = _clock()
     run = _start(forest=forest, clock=clock)
@@ -517,7 +618,7 @@ def test_dry_run_shows_the_api_calls_a_fallback_run_has_left(forest) -> None:
 
 def test_dry_run_matches_the_real_plan_for_an_initial_load_and_a_refresh(forest) -> None:
     clock = _clock()
-    cells = tuscany_weather_cells(forest_build_version=forest["version"])
+    cells = weather_cells_for_regions(forest_build_version=forest["version"], region_codes=["09"])
     initial = weather_services.plan_scheduled_weather(cells=cells, assessment_date=DAY, model="ecmwf_ifs")
     run = _start(forest=forest, clock=clock)
     assert run.mode == initial.mode == "initial"
@@ -926,7 +1027,7 @@ def test_a_new_process_reads_stored_history_with_no_provider_call_for_old_days(f
         assert sorted(rows) == [DAY - timedelta(days=offset) for offset in range(29, 0, -1)]
 
     plan = weather_services.plan_scheduled_weather(
-        cells=tuscany_weather_cells(forest_build_version=forest["version"]),
+        cells=weather_cells_for_regions(forest_build_version=forest["version"], region_codes=["09"]),
         assessment_date=next_day,
     )
 
@@ -979,7 +1080,7 @@ def test_known_missing_history_is_stored_and_never_fetched_again(forest) -> None
     assert set(history.values_list("status", flat=True)) == {WeatherDaily.Status.CHECKED_KNOWN_MISSING}
     next_day = DAY + timedelta(days=1)
     plan = weather_services.plan_scheduled_weather(
-        cells=tuscany_weather_cells(forest_build_version=forest["version"]), assessment_date=next_day
+        cells=weather_cells_for_regions(forest_build_version=forest["version"], region_codes=["09"]), assessment_date=next_day
     )
     assert all(part.start_date >= DAY for part in plan.parts)
 

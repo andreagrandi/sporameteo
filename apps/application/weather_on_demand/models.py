@@ -24,7 +24,7 @@ class ScheduledWeatherRun(models.Model):
         REFRESH = "refresh", "Refresh"
 
     id = models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True)
-    region_code = models.CharField(max_length=10)
+    region_code = models.CharField(max_length=100)
     assessment_date = models.DateField()
     forest_build_version = models.CharField(max_length=120)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)

@@ -11,6 +11,7 @@ from django.db.models import Q
 
 CENTRE_QUANTUM = Decimal("0.01")
 TUSCANY_ISTAT_CODE = "09"
+ALL_REGIONS = "all"
 
 
 class WeatherEligibilityError(ValueError):
@@ -114,17 +115,48 @@ def weather_cells_for_forest_build(*, build_version: str) -> tuple[WeatherCell, 
     return _cells_from_coordinates(rows=rows)
 
 
-def tuscany_weather_cells(
-    *, forest_build_version: str, region_code: str = TUSCANY_ISTAT_CODE
+def nightly_run_key(*, value: str) -> str:
+    """Return the run key of a region setting: all, or the sorted codes joined by commas."""
+    text = value.strip().lower()
+    if text == ALL_REGIONS:
+        return ALL_REGIONS
+    codes = sorted({code.strip() for code in value.split(",") if code.strip()})
+    if not codes:
+        raise WeatherEligibilityError("Name at least one region code, or all.")
+    return ",".join(codes)
+
+
+def nightly_region_codes(*, value: str, forest_build_version: str) -> tuple[str, ...]:
+    """Return the sorted region codes of a setting value or run key, and reject unknown codes."""
+    from national_forest.models import ForestBuild
+    from national_grid.models import GridRegion
+
+    key = nightly_run_key(value=value)
+    build = ForestBuild.objects.select_related("grid_build").filter(version=forest_build_version).first()
+    if build is None:
+        raise WeatherEligibilityError(f"No forest build exists for {forest_build_version!r}.")
+    known = set(GridRegion.objects.filter(build=build.grid_build).values_list("istat_code", flat=True))
+    if key == ALL_REGIONS:
+        return tuple(sorted(known))
+    codes = tuple(key.split(","))
+    unknown = [code for code in codes if code not in known]
+    if unknown:
+        raise WeatherEligibilityError(
+            f"Unknown region codes {unknown} for forest build {forest_build_version!r}. "
+            f"Known codes are {sorted(known)}."
+        )
+    return codes
+
+
+def weather_cells_for_regions(
+    *, forest_build_version: str, region_codes: Iterable[str]
 ) -> tuple[WeatherCell, ...]:
-    """Return the unique weather cells of Tuscany forest squares, each counted once."""
+    """Return the unique weather cells of the forest squares of these regions, each counted once."""
     from national_forest.models import ForestBuild, ForestCell
 
-    if region_code != TUSCANY_ISTAT_CODE:
-        raise WeatherEligibilityError(
-            f"Scheduled weather runs only Tuscany, region code {TUSCANY_ISTAT_CODE}, "
-            f"not {region_code!r}."
-        )
+    codes = sorted(set(region_codes))
+    if not codes:
+        raise WeatherEligibilityError("Name at least one region code.")
     build = ForestBuild.objects.filter(version=forest_build_version).first()
     if build is None:
         raise WeatherEligibilityError(f"No forest build exists for {forest_build_version!r}.")
@@ -135,7 +167,7 @@ def tuscany_weather_cells(
     forest_cells = ForestCell.objects.filter(
         build=build,
         is_forest=True,
-        grid_build_cell__owner_region__istat_code=region_code,
+        grid_build_cell__owner_region__istat_code__in=codes,
     )
     if forest_cells.filter(
         Q(weather_latitude__isnull=True) | Q(weather_longitude__isnull=True)
@@ -145,6 +177,14 @@ def tuscany_weather_cells(
         chunk_size=10_000
     )
     return _cells_from_coordinates(rows=rows)
+
+
+def weather_cells_for_run_key(*, forest_build_version: str, run_key: str) -> tuple[WeatherCell, ...]:
+    """Return the unique weather cells of the regions that a run key names."""
+    return weather_cells_for_regions(
+        forest_build_version=forest_build_version,
+        region_codes=nightly_region_codes(value=run_key, forest_build_version=forest_build_version),
+    )
 
 
 def eligible_weather_cells(*, forest_build_version: str) -> tuple[WeatherCell, ...]:

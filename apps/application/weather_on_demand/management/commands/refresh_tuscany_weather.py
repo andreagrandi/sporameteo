@@ -1,4 +1,4 @@
-"""Plan or start the scheduled Tuscany weather preparation."""
+"""Plan or start the scheduled weather preparation for the nightly regions."""
 
 import json
 from argparse import ArgumentParser
@@ -7,13 +7,13 @@ from datetime import date
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
-from weather_requests.eligibility import TUSCANY_ISTAT_CODE, WeatherEligibilityError, tuscany_weather_cells
+from weather_requests.eligibility import WeatherEligibilityError, nightly_run_key, weather_cells_for_run_key
 
 from ...services import italian_assessment_date, plan_nightly_weather, start_scheduled_weather_run
 
 
 class Command(BaseCommand):
-    help = "Print the Tuscany weather plan, or start the run that stores 38 days of weather from the files."
+    help = "Print the weather plan, or start the run that stores 38 days of weather from the files."
 
     def add_arguments(self, parser: ArgumentParser) -> None:
         parser.add_argument("--dry-run", action="store_true", help="Print the plan without writing or fetching.")
@@ -23,7 +23,11 @@ class Command(BaseCommand):
             default=None,
             help="Italian date to prepare, default today in Europe/Rome.",
         )
-        parser.add_argument("--region-code", default=TUSCANY_ISTAT_CODE, help="Only 09, Tuscany, is allowed.")
+        parser.add_argument(
+            "--region-code",
+            default=str(settings.SPORAMETEO_NIGHTLY_REGIONS),
+            help="Region codes such as 09,08, or all. Default from SPORAMETEO_NIGHTLY_REGIONS.",
+        )
         parser.add_argument(
             "--forest-build-version",
             default=str(getattr(settings, "SPORAMETEO_FOREST_BUILD_VERSION", "")),
@@ -37,21 +41,22 @@ class Command(BaseCommand):
         if not version:
             raise CommandError("Set SPORAMETEO_FOREST_BUILD_VERSION or pass --forest-build-version.")
         try:
+            region_code = nightly_run_key(value=options["region_code"])
             if options["dry_run"]:
-                cells = tuscany_weather_cells(
+                cells = weather_cells_for_run_key(
                     forest_build_version=version,
-                    region_code=options["region_code"],
+                    run_key=region_code,
                 )
                 plan = plan_nightly_weather(
                     cells=cells,
                     assessment_date=assessment_date,
-                    region_code=options["region_code"],
+                    region_code=region_code,
                 )
                 self._write_plan(plan=plan.as_dict(), as_json=options["json"])
                 return
             run = start_scheduled_weather_run(
                 assessment_date=assessment_date,
-                region_code=options["region_code"],
+                region_code=region_code,
                 forest_build_version=version,
             )
         except (WeatherEligibilityError, ValueError) as exc:

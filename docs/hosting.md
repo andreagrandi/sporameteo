@@ -381,6 +381,7 @@ sudo dokku config:set --no-restart sporameteo \
   SPORAMETEO_SECURE_HSTS_SECONDS="31536000" \
   SPORAMETEO_FOREST_BUILD_VERSION="tuscany-forest-italy-forest-copernicus-2018-v1-56" \
   SPORAMETEO_TERRAIN_BUILD_VERSION="tuscany-terrain-italy-terrain-glo30-2021-v2-56" \
+  SPORAMETEO_NIGHTLY_REGIONS="09" \
   SPORAMETEO_JRC_DIRECTORY="/app/data/jrc_host_trees" \
   RESEND_API_KEY="<Resend key>" \
   NIGHTLY_ALERT_EMAIL="<owner address>"
@@ -389,6 +390,8 @@ sudo dokku config:set --no-restart sporameteo \
 The two apps share one Resend account. The app sends from
 `noreply@sporameteo.com`, so `sporameteo.com` must be a verified domain in
 Resend. The build versions match the Tuscany dump in `docs/hosting_data.md`.
+`SPORAMETEO_NIGHTLY_REGIONS` names the regions of the nightly chain, `all` or
+codes such as `09,08`. It defaults to `09`, as `docs/weather_updates.md` explains.
 `--no-restart` avoids errors before the first deploy.
 
 ## Domain and HTTPS

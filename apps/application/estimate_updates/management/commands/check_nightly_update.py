@@ -1,4 +1,4 @@
-"""Check today's Tuscany forecast run, retry it, or email the owner when it is missing."""
+"""Check today's forecast runs, retry it, or email the owner when it is missing."""
 
 import logging
 from argparse import ArgumentParser
@@ -10,7 +10,6 @@ from django.core.management.base import BaseCommand
 
 from estimate_updates.nightly_check import check_nightly_update, retry_nightly_update
 from weather_on_demand.services import italian_assessment_date
-from weather_requests.eligibility import TUSCANY_ISTAT_CODE
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +25,11 @@ class Command(BaseCommand):
             default=None,
             help="Italian date to check, default today in Europe/Rome.",
         )
-        parser.add_argument("--region-code", default=TUSCANY_ISTAT_CODE, help="Only 09, Tuscany, is allowed.")
+        parser.add_argument(
+            "--region-code",
+            default=None,
+            help="Region codes such as 09,08, or all. Default from SPORAMETEO_NIGHTLY_REGIONS.",
+        )
 
     def handle(self, *args, **options) -> None:
         assessment_date = options["assessment_date"] or italian_assessment_date()
