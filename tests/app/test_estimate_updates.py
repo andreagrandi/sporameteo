@@ -1222,6 +1222,88 @@ def test_startup_recovery_requeues_interrupted_and_terminal_tasks(
     assert set(queued) == {interrupted.id, terminal.id}
 
 
+def _task_with_calculation_version(
+    *, fixture: dict[str, object], state: str, calculation_version: str, fingerprint: str,
+) -> EstimateTask:
+    snapshot = fixture["snapshot"]
+    return EstimateTask.objects.create(
+        snapshot=snapshot,
+        cell_key=snapshot.cell_key,
+        assessment_date=snapshot.assessment_date,
+        forest_build_version=fixture["forest"].version,
+        # The terrain version differs per task, because each input tuple may hold one task only.
+        terrain_build_version=f"test-terrain-{fingerprint[:8]}",
+        calculation_version=calculation_version,
+        input_fingerprint=fingerprint,
+        state=state,
+    )
+
+
+@pytest.mark.django_db(transaction=True)
+def test_task_queued_with_an_older_method_closes_without_error_or_publication(
+    complete_estimate_fixture: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from estimate_updates import services
+    from estimate_updates.tasks import estimate_update_task
+
+    monkeypatch.setattr(services, "calculation_version", lambda: "b" * 64)
+
+    def fail(**kwargs):
+        raise AssertionError("A replaced task must not calculate.")
+
+    monkeypatch.setattr(services, "calculate_and_publish_estimates", fail)
+    task_row = _task_with_calculation_version(
+        fixture=complete_estimate_fixture, state=EstimateTask.State.WAITING,
+        calculation_version="a" * 64, fingerprint="1" * 64,
+    )
+
+    assert estimate_update_task.call(job_id=str(task_row.id)) == ""
+    task_row.refresh_from_db()
+    assert task_row.state == EstimateTask.State.FAILED
+    assert task_row.failure_reason == services.REPLACED_TASK_REASON
+    assert task_row.attempt_count == 0
+    assert task_row.ended_at is not None
+    assert EstimateUpdate.objects.count() == 0
+
+
+@pytest.mark.django_db(transaction=True)
+def test_startup_recovery_closes_tasks_of_an_older_method_without_queueing_them(
+    complete_estimate_fixture: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from estimate_updates import services
+
+    monkeypatch.setattr(services, "calculation_version", lambda: "b" * 64)
+    monkeypatch.setattr(services, "_task_backend_status", lambda *, task_id: None)
+    queued: list[object] = []
+    monkeypatch.setattr(services, "_queue_estimate_task", lambda *, task_id: queued.append(task_id))
+    old_waiting = _task_with_calculation_version(
+        fixture=complete_estimate_fixture, state=EstimateTask.State.WAITING,
+        calculation_version="a" * 64, fingerprint="2" * 64,
+    )
+    old_running = _task_with_calculation_version(
+        fixture=complete_estimate_fixture, state=EstimateTask.State.RUNNING,
+        calculation_version="a" * 64, fingerprint="3" * 64,
+    )
+    current = _task_with_calculation_version(
+        fixture=complete_estimate_fixture, state=EstimateTask.State.WAITING,
+        calculation_version="b" * 64, fingerprint="4" * 64,
+    )
+
+    recover_estimate_tasks()
+
+    for task_row in (old_waiting, old_running):
+        task_row.refresh_from_db()
+        assert task_row.state == EstimateTask.State.FAILED
+        assert task_row.failure_reason == services.REPLACED_TASK_REASON
+    current.refresh_from_db()
+    assert current.state == EstimateTask.State.WAITING
+    assert current.id in queued
+    assert old_waiting.id not in queued
+    assert old_running.id not in queued
+
+
 @pytest.mark.django_db(transaction=True)
 def test_startup_recovery_recreates_missing_ready_weather_handoff(
     complete_estimate_fixture: dict[str, object],

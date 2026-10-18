@@ -54,3 +54,8 @@ of naming the technique.
 
 Use the `gh-issue` skill in `.agents/skills/gh-issue/` to create or change
 GitHub issues.
+
+## Sentry
+
+Use the `sporameteo-sentry` skill in `.agents/skills/sporameteo-sentry/` to
+read a Sentry issue or alert.
