@@ -26,6 +26,7 @@ from national_forest.models import ForestBuild
 from national_grid.models import GridBuildCell
 from national_terrain.models import TerrainBuild
 from weather_on_demand import services as weather_services
+from weather_requests.eligibility import TUSCANY_ISTAT_CODE
 
 
 GEOD = Geod(ellps="WGS84")
@@ -72,12 +73,21 @@ class WeatherCellSchema(Schema):
 
 
 class RunSchema(Schema):
-    """Describe the published run that every map read comes from."""
+    """Describe the published map that every map read comes from, as one identifier."""
 
-    run_id: UUID
+    run_id: str
     assessment_date: date
     published_at: datetime
     target_dates: list[date]
+
+
+class RegionRunSchema(Schema):
+    """Describe the published run of one region."""
+
+    region_code: str
+    run_id: UUID
+    assessment_date: date
+    published_at: datetime
 
 
 class InfoResponse(Schema):
@@ -86,6 +96,7 @@ class InfoResponse(Schema):
     today: date
     target_dates: list[date]
     run: RunSchema | None
+    runs: list[RegionRunSchema]
     coverage: CoverageSchema | None
     forest_build_version: str
     max_width_km: float
@@ -124,7 +135,7 @@ class SquaresResponse(Schema):
     """Describe one GeoJSON square collection."""
 
     type: Literal["FeatureCollection"]
-    run_id: UUID
+    run_id: str
     assessment_date: date
     target_date: date
     square_count: int
@@ -378,20 +389,21 @@ def _coverage_cached(*, grid_build_id: str, forest_fingerprint: str) -> Coverage
     )
 
 
-_TUSCANY_EXTENTS: dict[str, CoverageSchema] = {}
+_REGION_EXTENTS: dict[tuple[str, tuple[str, ...]], CoverageSchema] = {}
 
 
-def _coverage(*, build: ForestBuild) -> CoverageSchema | None:
-    """Return the Tuscany region extent when it exists, else the grid extent."""
+def _coverage(*, build: ForestBuild, region_codes: list[str]) -> CoverageSchema | None:
+    """Return the union extent of the regions when it exists, else the grid extent."""
     grid_build_id = str(build.grid_build_id)
-    cached = _TUSCANY_EXTENTS.get(grid_build_id)
+    cache_key = (grid_build_id, tuple(region_codes))
+    cached = _REGION_EXTENTS.get(cache_key)
     if cached is not None:
         return cached
-    extent = published.tuscany_extent(grid_build_id=build.grid_build_id)
+    extent = published.region_extent(grid_build_id=build.grid_build_id, region_codes=region_codes)
     if extent is not None:
         west, south, east, north = extent
         cached = CoverageSchema(west=west, south=south, east=east, north=north)
-        _TUSCANY_EXTENTS[grid_build_id] = cached
+        _REGION_EXTENTS[cache_key] = cached
         return cached
     return _coverage_cached(
         grid_build_id=grid_build_id,
@@ -435,16 +447,19 @@ def info(request: HttpRequest) -> InfoResponse | HttpResponse:
     if build is None:
         return _build_error()
     today = _today()
-    run = published.published_run()
-    if run is None:
+    current = published.published_map()
+    if current is None:
         dates = [today + timedelta(days=offset) for offset in range(MAX_DAYS_AHEAD + 1)]
+        region_codes = [TUSCANY_ISTAT_CODE]
     else:
-        dates = run.available_dates(today=today)
-    coverage = _coverage(build=build)
+        dates = current.available_dates(today=today)
+        region_codes = sorted(current.runs)
+    coverage = _coverage(build=build, region_codes=region_codes)
     return {
         "today": today.isoformat(),
         "target_dates": [value.isoformat() for value in dates],
-        "run": published.run_info(run=run) if run is not None else None,
+        "run": published.map_info(published=current) if current is not None else None,
+        "runs": published.regions_info(published=current) if current is not None else [],
         "coverage": coverage.dict() if coverage is not None else None,
         "forest_build_version": build.version,
         "max_width_km": MAX_VIEW_WIDTH_M / 1_000,
@@ -474,15 +489,15 @@ def estimate_overview(request: HttpRequest) -> HttpResponse:
     target, error = _parse_date(request.GET.get("target_date"))
     if error is not None or target is None:
         return error
-    run = published.published_run()
-    if run is None:
+    current = published.published_map()
+    if current is None:
         return _forecast_unavailable()
-    available_dates = run.available_dates(today=_today())
+    available_dates = current.available_dates(today=_today())
     if target not in available_dates:
         return _unsupported_date(available_dates=available_dates)
     width, height = _bbox_size_m(bbox=bbox)
     size = max(2000, math.ceil(max(width, height) / 80 / 1000) * 1000)
-    body = published.read_overview(run=run, target_date=target, bbox=bbox, size=size)
+    body = published.read_overview(published=current, target_date=target, bbox=bbox, size=size)
     return _body_response(body=body)
 
 
@@ -583,15 +598,15 @@ def squares(request: HttpRequest) -> HttpResponse:
                 "max_height_m": MAX_VIEW_HEIGHT_M,
             },
         )
-    run = published.published_run()
-    if run is None:
+    current = published.published_map()
+    if current is None:
         return _forecast_unavailable()
-    available_dates = run.available_dates(today=_today())
+    available_dates = current.available_dates(today=_today())
     if parsed_date not in available_dates:
         return _unsupported_date(available_dates=available_dates)
     try:
         body = published.read_squares(
-            run=run,
+            published=current,
             target_date=parsed_date,
             bbox=parsed_bbox,
             max_squares=MAX_SQUARES,

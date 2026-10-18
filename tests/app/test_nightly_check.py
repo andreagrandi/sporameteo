@@ -209,3 +209,37 @@ def test_the_default_regions_come_from_the_setting(tuscany, settings) -> None:
     settings.SPORAMETEO_NIGHTLY_REGIONS = "09"
 
     assert check_nightly_update(assessment_date=DAY).reason == PUBLISHED
+
+
+def _publish_only_tuscany() -> None:
+    process_forecast_run(run_id=start_forecast_run(assessment_date=DAY, region_code="09").id)
+
+
+def test_one_email_names_the_regions_that_did_not_publish(tuscany, email_settings) -> None:
+    _publish_day(day=DAY)
+    ScheduledWeatherRun.objects.create(
+        region_code="09,12",
+        assessment_date=DAY,
+        forest_build_version=tuscany.forest.version,
+        status=ScheduledWeatherRun.Status.COMPLETED,
+        mode=ScheduledWeatherRun.Mode.INITIAL,
+        reason_code="ready",
+    )
+    _publish_only_tuscany()
+
+    call_command("check_nightly_update", assessment_date=DAY, region_code="09,12")
+
+    assert len(mail.outbox) == 1
+    assert NOT_FINISHED in mail.outbox[0].subject
+    assert "Regions not published: 12." in mail.outbox[0].body
+    assert "09" not in mail.outbox[0].body.split("Regions not published:")[1]
+
+
+def test_the_missing_weather_run_message_names_the_unpublished_regions(tuscany) -> None:
+    _publish_day(day=DAY)
+    _publish_only_tuscany()
+
+    result = check_nightly_update(assessment_date=DAY, region_code="09,12")
+
+    assert result.reason == NO_WEATHER_RUN
+    assert "Regions not published: 12." in result.message

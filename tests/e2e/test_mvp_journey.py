@@ -542,13 +542,13 @@ def test_real_data_journey_from_search_to_favorite_and_language_switch(
 
 
 @pytest.mark.parametrize("language", ["it", "en"])
-def test_real_data_view_outside_tuscany_explains_the_gap(
+def test_real_data_view_outside_italy_explains_the_gap(
     new_visitor: Callable[..., Visitor], base_url: str, language: str
 ) -> None:
-    """Show that a view outside Tuscany says why it has no estimates."""
+    """Show that a view outside every published region says why it has no estimates."""
     visitor = new_visitor(language=language, device="desktop")
     page = visitor.page
-    page.goto(url=f"{base_url}/map/?center=45.46,9.19&zoom=12", wait_until="domcontentloaded")
+    page.goto(url=f"{base_url}/map/?center=48.85,2.35&zoom=12", wait_until="domcontentloaded")
     expect(page.locator("#mapmsgs")).to_contain_text(_labels(page)["map_outside_coverage"])
     assert page.evaluate("() => window.SporaMeteoMap.getDiagnostics().squareSetCount") == 0
     expect(page.locator(DETAILS)).to_have_count(0)

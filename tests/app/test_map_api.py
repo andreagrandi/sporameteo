@@ -45,16 +45,23 @@ from weather_summaries.models import WeatherSnapshot
 MAP_DATE = date(2026, 10, 12)
 
 
+def map_id_of(*runs: ForecastRun) -> str:
+    """Return the map identifier that the API derives from the current run of each region."""
+    text = "|".join(f"{run.region_code}:{run.id}" for run in sorted(runs, key=lambda run: run.region_code))
+    return sha256(text.encode()).hexdigest()[:32]
+
+
 def publish_run(
     *,
     fixture: dict[str, object],
     updates: dict[str, EstimateUpdate],
     assessment_date: date = MAP_DATE,
     calculation_version: str = "map-calc-1",
+    region_code: str = "09",
 ) -> ForecastRun:
     """Create a published run that holds the given updates and move the pointer to it."""
     run = ForecastRun.objects.create(
-        region_code="09",
+        region_code=region_code,
         assessment_date=assessment_date,
         status=ForecastRun.Status.PUBLISHED,
         forest_build=fixture["build"],
@@ -75,10 +82,10 @@ def publish_run(
             state=ForecastRunCell.State.COMPLETED,
             update=update,
         )
-    pointer = PublishedForecastRun.objects.filter(region_code="09").first()
+    pointer = PublishedForecastRun.objects.filter(region_code=region_code).first()
     if pointer is None:
         PublishedForecastRun.objects.create(
-            region_code="09",
+            region_code=region_code,
             current_run=run,
             previous_run=None,
             published_at=datetime(2026, 10, 12, 12, tzinfo=UTC),
@@ -486,7 +493,7 @@ def test_coverage_uses_the_transformed_extent_of_stored_cell_geometry() -> None:
         cell_count=2,
     )
 
-    actual = _coverage(build=forest)
+    actual = _coverage(build=forest, region_codes=[region.istat_code])
     expected = [float("inf"), float("inf"), float("-inf"), float("-inf")]
     for geometry in (first_geometry, second_geometry):
         transformed = shapely_transform(
@@ -528,7 +535,7 @@ def test_broad_view_returns_zoom_in_error_without_any_database_read(
     def fail_if_called() -> None:
         raise AssertionError("broad views must not read the published run")
 
-    monkeypatch.setattr("map_api.published.published_run", fail_if_called)
+    monkeypatch.setattr("map_api.published.published_map", fail_if_called)
     monkeypatch.setattr("map_api.api._today", lambda: MAP_DATE)
     response = Client().get(
         "/api/v1/squares?bbox=10,44,11,44.5&target_date=2026-10-12",
@@ -765,7 +772,7 @@ def test_squares_route_reads_the_published_run_and_keeps_all_square_states(
         for query in cached_queries
     )
     body = response.json()
-    assert body["run_id"] == str(run.id)
+    assert body["run_id"] == map_id_of(run)
     assert body["assessment_date"] == MAP_DATE.isoformat()
     assert body["target_date"] == MAP_DATE.isoformat()
     ids = [feature["id"] for feature in body["features"]]
@@ -870,6 +877,7 @@ def test_squares_route_rejects_a_view_outside_the_tuscany_extent(
 
     assert response.status_code == 400
     assert response.json()["code"] == "outside_coverage"
+    assert response.json()["message"] == "The bbox is outside the regions with published estimates."
     assert not any(
         ForestCell._meta.db_table in query["sql"]
         or EstimateResult._meta.db_table in query["sql"]
@@ -891,7 +899,7 @@ def test_overview_averages_run_scores_and_marks_a_mixed_group_unavailable(
     with override_settings(SPORAMETEO_FOREST_BUILD_VERSION=build.version):
         only_first = client.get("/api/v1/estimate-overview", query)
         assert only_first.status_code == 200
-        assert only_first.json()["run_id"] == str(run.id)
+        assert only_first.json()["run_id"] == map_id_of(run)
         assert only_first.json()["assessment_date"] == MAP_DATE.isoformat()
         # The forest square without a result row is not part of the run, so it is left out.
         feature = only_first.json()["features"][0]["properties"]
@@ -912,7 +920,7 @@ def test_overview_averages_run_scores_and_marks_a_mixed_group_unavailable(
             calculation_version="map-calc-2",
         )
         mixed = client.get("/api/v1/estimate-overview", query).json()
-        assert mixed["run_id"] == str(new_run.id)
+        assert mixed["run_id"] == map_id_of(new_run)
         feature = mixed["features"][0]["properties"]
         assert feature["state"] == "unavailable"
         assert feature["percentage"] is None
@@ -939,7 +947,7 @@ def test_info_describes_the_published_run_and_the_tuscany_extent(
         body = Client().get("/api/v1/info").json()
 
     assert body["today"] == (MAP_DATE + timedelta(days=3)).isoformat()
-    assert body["run"]["run_id"] == str(run.id)
+    assert body["run"]["run_id"] == map_id_of(run)
     assert body["run"]["assessment_date"] == MAP_DATE.isoformat()
     assert body["run"]["published_at"].startswith("2026-10-12T12:00:00")
     assert body["run"]["target_dates"] == [
@@ -981,3 +989,210 @@ def test_forest_layer_route_reads_relative_and_absolute_stored_paths(
         response = Client().get("/api/v1/forest-layer")
 
     assert response.status_code == 200
+
+
+def add_second_region(*, fixture: dict[str, object]) -> None:
+    """Give the last two squares to region 12 and give square 3 the weather cell of square 0."""
+    cells = fixture["cells"]
+    geometry = Polygon.from_bbox((4_301_500, 2_300_000, 4_302_500, 2_300_500))
+    geometry.srid = 3035
+    region = GridRegion.objects.create(
+        build=fixture["build"].grid_build,
+        istat_code="12",
+        name="Second map region",
+        geometry=MultiPolygon(geometry, srid=3035),
+    )
+    GridBuildCell.objects.filter(
+        id__in=[cells[3].grid_build_cell_id, cells[4].grid_build_cell_id],
+    ).update(owner_region=region)
+    ForestCell.objects.filter(id=cells[3].id).update(weather_latitude=44.0, weather_longitude=11.0)
+
+
+@pytest.mark.django_db(transaction=True)
+def test_a_view_across_two_regions_gives_each_square_the_run_of_its_own_region(
+    map_fixture: dict[str, object], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    add_second_region(fixture=map_fixture)
+    cells = map_fixture["cells"]
+    first_update = map_fixture["new_update"]
+    second_update = add_update(
+        fixture=map_fixture,
+        cell_key="44.00,11.00",
+        forest_cell=cells[3],
+        values=bytes([60] * 8),
+        label="second-region",
+        assessment_date=MAP_DATE + timedelta(days=1),
+    )
+    first_run = publish_run(fixture=map_fixture, updates={"44.00,11.00": first_update})
+    second_run = publish_run(
+        fixture=map_fixture,
+        updates={"44.00,11.00": second_update},
+        assessment_date=MAP_DATE + timedelta(days=1),
+        region_code="12",
+    )
+    monkeypatch.setattr("map_api.api._today", lambda: MAP_DATE + timedelta(days=1))
+    first_id = cells[0].grid_build_cell.cell.cell_id
+    second_id = cells[3].grid_build_cell.cell.cell_id
+
+    with override_settings(SPORAMETEO_FOREST_BUILD_VERSION=map_fixture["build"].version):
+        client = Client()
+        shared = client.get(
+            "/api/v1/squares",
+            {"bbox": map_fixture["bbox"], "target_date": (MAP_DATE + timedelta(days=1)).isoformat()},
+        ).json()
+        last_day = client.get(
+            "/api/v1/squares",
+            {"bbox": map_fixture["bbox"], "target_date": (MAP_DATE + timedelta(days=8)).isoformat()},
+        ).json()
+
+    assert shared["run_id"] == map_id_of(first_run, second_run)
+    assert shared["assessment_date"] == (MAP_DATE + timedelta(days=1)).isoformat()
+    assert shared["square_count"] == 5
+    by_cell_id = {feature["id"]: feature["properties"] for feature in shared["features"]}
+    assert by_cell_id[first_id]["percentage"] == 42
+    assert by_cell_id[first_id]["assessment_date"] == MAP_DATE.isoformat()
+    assert by_cell_id[first_id]["update_id"] == str(first_update.public_id)
+    assert by_cell_id[second_id]["percentage"] == 60
+    assert by_cell_id[second_id]["assessment_date"] == (MAP_DATE + timedelta(days=1)).isoformat()
+    assert by_cell_id[second_id]["update_id"] == str(second_update.public_id)
+    # The first run holds only 8 days from its own date, so it has nothing for day 8.
+    by_cell_id = {feature["id"]: feature["properties"] for feature in last_day["features"]}
+    assert by_cell_id[first_id]["percentage"] is None
+    assert by_cell_id[first_id]["reason"] == "requiredgap"
+    assert by_cell_id[second_id]["percentage"] == 60
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize("on_another_build", [False, True])
+def test_a_square_of_a_region_without_a_usable_run_has_no_percentage(
+    map_fixture: dict[str, object], monkeypatch: pytest.MonkeyPatch, on_another_build: bool,
+) -> None:
+    add_second_region(fixture=map_fixture)
+    cells = map_fixture["cells"]
+    update = map_fixture["new_update"]
+    # The square has a stored result, so only its unpublished region can hide it.
+    EstimateResult.objects.create(update=update, forest_cell=cells[3], values=bytes([60] * 8))
+    publish_run(fixture=map_fixture, updates={"44.00,11.00": update})
+    if on_another_build:
+        other_build = ForestBuild.objects.create(
+            version=f"other-forest-{uuid4().hex[:10]}",
+            grid_build=map_fixture["build"].grid_build,
+            fingerprint="d" * 64,
+            status=ForestBuild.Status.COMPLETED,
+            planned_chunk_count=1,
+            completed_chunk_count=1,
+            cell_count=5,
+        )
+        publish_run(
+            fixture={**map_fixture, "build": other_build},
+            updates={"44.00,11.00": update},
+            region_code="12",
+        )
+    monkeypatch.setattr("map_api.api._today", lambda: MAP_DATE)
+
+    with override_settings(SPORAMETEO_FOREST_BUILD_VERSION=map_fixture["build"].version):
+        body = Client().get(
+            "/api/v1/squares",
+            {"bbox": map_fixture["bbox"], "target_date": MAP_DATE.isoformat()},
+        ).json()
+
+    by_cell_id = {feature["id"]: feature["properties"] for feature in body["features"]}
+    assert by_cell_id[cells[0].grid_build_cell.cell.cell_id]["percentage"] == 0
+    unpublished = by_cell_id[cells[3].grid_build_cell.cell.cell_id]
+    assert unpublished["percentage"] is None
+    assert unpublished["reason"] == "outside_prepared_area"
+    assert unpublished["update_id"] is None
+
+
+@pytest.mark.django_db(transaction=True)
+def test_info_lists_the_run_of_each_region_and_the_map_id_changes_when_one_publishes(
+    map_fixture: dict[str, object], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    add_second_region(fixture=map_fixture)
+    cells = map_fixture["cells"]
+    second_update = add_update(
+        fixture=map_fixture,
+        cell_key="44.00,11.00",
+        forest_cell=cells[3],
+        values=bytes([60] * 8),
+        label="info-second",
+        assessment_date=MAP_DATE + timedelta(days=1),
+    )
+    first_run = publish_run(fixture=map_fixture, updates={"44.00,11.00": map_fixture["new_update"]})
+    second_run = publish_run(
+        fixture=map_fixture,
+        updates={"44.00,11.00": second_update},
+        assessment_date=MAP_DATE + timedelta(days=1),
+        region_code="12",
+    )
+    monkeypatch.setattr("map_api.api._today", lambda: MAP_DATE)
+
+    with override_settings(SPORAMETEO_FOREST_BUILD_VERSION=map_fixture["build"].version):
+        client = Client()
+        body = client.get("/api/v1/info").json()
+        newer_run = publish_run(
+            fixture=map_fixture,
+            updates={"44.00,11.00": second_update},
+            assessment_date=MAP_DATE + timedelta(days=1),
+            calculation_version="map-calc-2",
+            region_code="12",
+        )
+        after = client.get("/api/v1/info").json()
+
+    assert body["run"]["run_id"] == map_id_of(first_run, second_run)
+    assert body["run"]["assessment_date"] == (MAP_DATE + timedelta(days=1)).isoformat()
+    assert [item["region_code"] for item in body["runs"]] == ["09", "12"]
+    assert [item["run_id"] for item in body["runs"]] == [str(first_run.id), str(second_run.id)]
+    assert body["runs"][0]["assessment_date"] == MAP_DATE.isoformat()
+    assert body["runs"][1]["assessment_date"] == (MAP_DATE + timedelta(days=1)).isoformat()
+    assert after["run"]["run_id"] == map_id_of(first_run, newer_run)
+    assert after["run"]["run_id"] != body["run"]["run_id"]
+    grid = map_fixture["build"].grid_build
+    bounds = [
+        shapely_transform(load_wkb(bytes(region.geometry.wkb)), GRID_TO_WGS84.transform, interleaved=False).bounds
+        for region in GridRegion.objects.filter(build=grid)
+    ]
+    expected = (min(b[0] for b in bounds), min(b[1] for b in bounds), max(b[2] for b in bounds), max(b[3] for b in bounds))
+    assert all(
+        isclose(body["coverage"][name], value, abs_tol=1e-7)
+        for name, value in zip(("west", "south", "east", "north"), expected, strict=True)
+    )
+
+
+@pytest.mark.django_db(transaction=True)
+def test_overview_averages_squares_of_two_regions_with_their_own_dates(
+    map_fixture: dict[str, object], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    add_second_region(fixture=map_fixture)
+    cells = map_fixture["cells"]
+    second_update = add_update(
+        fixture=map_fixture,
+        cell_key="44.00,11.00",
+        forest_cell=cells[3],
+        values=bytes([60] * 8),
+        label="overview-two-regions",
+        assessment_date=MAP_DATE + timedelta(days=1),
+    )
+    first_run = publish_run(fixture=map_fixture, updates={"44.00,11.00": map_fixture["new_update"]})
+    second_run = publish_run(
+        fixture=map_fixture,
+        updates={"44.00,11.00": second_update},
+        assessment_date=MAP_DATE + timedelta(days=1),
+        region_code="12",
+    )
+    monkeypatch.setattr("map_api.api._today", lambda: MAP_DATE + timedelta(days=1))
+
+    with override_settings(SPORAMETEO_FOREST_BUILD_VERSION=map_fixture["build"].version):
+        body = Client().get(
+            "/api/v1/estimate-overview",
+            {"bbox": "9,43,12,45", "target_date": (MAP_DATE + timedelta(days=1)).isoformat()},
+        ).json()
+
+    assert body["run_id"] == map_id_of(first_run, second_run)
+    assert body["assessment_date"] == (MAP_DATE + timedelta(days=1)).isoformat()
+    properties = [feature["properties"] for feature in body["features"]]
+    assert len(properties) == 1
+    assert properties[0]["forest_square_count"] == 2
+    assert properties[0]["scored_square_count"] == 2
+    assert properties[0]["percentage"] == 51
+    assert properties[0]["assessment_date"] == MAP_DATE.isoformat()

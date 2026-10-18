@@ -910,7 +910,7 @@ def test_forecast_task_publishes_every_region_and_a_rerun_skips_them(
 
     assert published_forecast_run(region_code="09").run.assessment_date == DAY
     assert published_forecast_run(region_code="12").run.assessment_date == DAY
-    assert calls == [{"region_code": "09"}]
+    assert sorted(call["region_code"] for call in calls) == ["09", "12"]
     run_ids = set(ForecastRun.objects.values_list("id", flat=True))
 
     def forbidden(**kwargs: object) -> None:
@@ -953,7 +953,7 @@ def test_a_failed_region_keeps_its_last_run_and_the_other_region_publishes(
     assert published_forecast_run(region_code="12").run.assessment_date == next_day
 
 
-def test_publishing_another_region_queues_no_map_warm_up(
+def test_publishing_another_region_queues_the_map_warm_up_of_that_region(
     tuscany: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = _count_warm_ups(monkeypatch=monkeypatch)
@@ -962,7 +962,7 @@ def test_publishing_another_region_queues_no_map_warm_up(
     run = process_forecast_run(run_id=start_forecast_run(assessment_date=DAY, region_code="12").id)
 
     assert run.status == ForecastRun.Status.PUBLISHED
-    assert calls == []
+    assert calls == [{"region_code": "12"}]
 
 
 def test_a_forecast_run_rejects_a_region_that_is_not_in_the_grid(tuscany: SimpleNamespace) -> None:

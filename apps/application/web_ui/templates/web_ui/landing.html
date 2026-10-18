@@ -26,10 +26,10 @@
 <div class="lg:col-span-7 space-y-6 min-w-0">
 <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-surface-container-high text-primary font-caption-topo text-caption-topo uppercase tracking-wider shadow-sm">
 <span class="w-2 h-2 shrink-0 rounded-full bg-on-tertiary-container"></span>
-<span>{% translate "Free experimental tool for Tuscan forests" %}</span>
+<span>{% translate "Free experimental tool for Italian forests" %}</span>
 </div>
 <h1 class="font-headline-lg-mobile text-headline-lg-mobile sm:text-headline-lg lg:text-[46px] lg:leading-[52px] tracking-tight text-primary font-serif">{% translate "Hear the forest breathe. Find where conditions for porcini look favourable." %}</h1>
-<p class="font-body-lg text-body-lg text-on-surface-variant max-w-2xl leading-relaxed">{% translate "SporaMeteo combines the <strong class=&quot;text-on-surface font-semibold&quot;>Copernicus</strong> forest map with <strong class=&quot;text-on-surface font-semibold&quot;>Open-Meteo</strong> modelled weather to estimate the chance that porcini are growing in 500 metre forest squares across Tuscany. Other regions are coming soon. No sign-up, no advertising, free." %}</p>
+<p class="font-body-lg text-body-lg text-on-surface-variant max-w-2xl leading-relaxed">{% translate "SporaMeteo combines the <strong class=&quot;text-on-surface font-semibold&quot;>Copernicus</strong> forest map with <strong class=&quot;text-on-surface font-semibold&quot;>Open-Meteo</strong> modelled weather to estimate the chance that porcini are growing in 500 metre forest squares across Italy. No sign-up, no advertising, free." %}</p>
 <div class="pt-2 flex flex-wrap items-center gap-4">
 <a class="inline-flex items-center gap-3 px-6 py-3.5 bg-primary text-on-primary font-title-md text-title-md rounded-lg shadow-md hover:bg-primary-container hover:text-on-primary-container transition-all group" data-app-link href="/map/">
 <span class="material-symbols-outlined text-[20px] transition-transform group-hover:rotate-45">explore</span>
@@ -55,8 +55,8 @@
 </div>
 <div class="min-w-0">
 <p class="font-caption-topo text-caption-topo uppercase tracking-wider text-outline">{% translate "Coverage" %}</p>
-<p class="font-title-lg text-[15px] sm:text-title-lg text-primary font-mono mt-0.5">{% translate "Tuscany" %}</p>
-<p class="font-body-sm text-body-sm text-on-surface-variant">{% translate "Other regions coming soon" %}</p>
+<p class="font-title-lg text-[15px] sm:text-title-lg text-primary font-mono mt-0.5">{% translate "Italy" %}</p>
+<p class="font-body-sm text-body-sm text-on-surface-variant">{% translate "All regions" %}</p>
 </div>
 </div>
 </div>
@@ -311,11 +311,11 @@
 <div class="flex flex-col md:flex-row md:items-end justify-between gap-6">
 <div class="space-y-3 max-w-2xl">
 <p class="font-caption-topo text-caption-topo uppercase tracking-wider text-outline">{% translate "Examples from the latest update" %}</p>
-<h2 class="font-headline-lg-mobile text-headline-lg-mobile sm:text-headline-lg text-primary font-serif">{% translate "Forest areas of Tuscany" %}</h2>
+<h2 class="font-headline-lg-mobile text-headline-lg-mobile sm:text-headline-lg text-primary font-serif">{% translate "Forest areas of Italy" %}</h2>
 <p class="font-body-md text-body-md text-on-surface-variant leading-relaxed">{% translate "One fixed square in each of four forest areas, with its estimate for today. The numbers change with every nightly update." %}{% if older_notice %} {{ older_notice }}{% endif %}</p>
 </div>
 <a class="inline-flex items-center gap-2 text-primary hover:text-on-tertiary-container font-title-md text-title-md transition-colors group" data-app-link href="/map/">
-<span>{% translate "Open the map of Tuscany" %}</span>
+<span>{% translate "Open the map" %}</span>
 <span class="material-symbols-outlined text-[18px] transition-transform group-hover:translate-x-1">arrow_forward</span>
 </a>
 </div>
@@ -348,15 +348,15 @@
 <div class="bg-surface-container-lowest rounded-xl overflow-hidden shadow-sm flex flex-col justify-between hover:shadow-md transition-all">
 <div class="p-5 space-y-4">
 <div class="flex items-center justify-between gap-2">
-<span class="font-caption-topo text-caption-topo px-2 py-0.5 rounded bg-surface-container text-primary font-mono uppercase">{% translate "Tuscany, Garfagnana" %}</span>
+<span class="font-caption-topo text-caption-topo px-2 py-0.5 rounded bg-surface-container text-primary font-mono uppercase">{% translate "Emilia-Romagna, Borgotaro" %}</span>
 <div class="flex items-baseline gap-1 min-w-0 justify-end text-right">
-{% if areas.garfagnana.has_estimate %}<span class="font-title-lg text-title-lg font-mono font-bold text-primary num" data-landing-area="garfagnana">{{ areas.garfagnana.percent }}</span>
-<span class="font-caption-topo text-caption-topo text-outline">{{ areas.garfagnana.date_text }}</span>{% else %}<span class="font-body-sm text-body-sm text-on-surface-variant text-right">{{ areas.garfagnana.reason }}</span>{% endif %}
+{% if areas.borgotaro.has_estimate %}<span class="font-title-lg text-title-lg font-mono font-bold text-primary num" data-landing-area="borgotaro">{{ areas.borgotaro.percent }}</span>
+<span class="font-caption-topo text-caption-topo text-outline">{{ areas.borgotaro.date_text }}</span>{% else %}<span class="font-body-sm text-body-sm text-on-surface-variant text-right">{{ areas.borgotaro.reason }}</span>{% endif %}
 </div>
 </div>
 <div>
-<h3 class="font-title-lg text-title-lg text-primary">{% translate "Garfagnana and Apuan Alps" %}</h3>
-<p class="font-body-sm text-body-sm text-on-surface-variant mt-1">{% translate "Orecchiella, Pania della Croce, Careggine" %}</p>
+<h3 class="font-title-lg text-title-lg text-primary">{% translate "Borgotaro" %}</h3>
+<p class="font-body-sm text-body-sm text-on-surface-variant mt-1">{% translate "Broadleaf forest near Borgotaro. Its porcini carry the protected geographic name IGP." %}</p>
 </div>
 <div class="space-y-2 pt-2 border-t border-surface-container-highest font-body-sm text-body-sm">
 <div class="flex justify-between gap-3 text-on-surface-variant"><span>{% translate "Square" %}</span><span class="font-mono text-primary">500 m</span></div>
@@ -364,7 +364,7 @@
 </div>
 </div>
 <div class="p-5 pt-0">
-<a class="w-full inline-flex items-center justify-center gap-2 py-2.5 rounded-lg bg-surface-container hover:bg-primary hover:text-on-primary text-primary font-title-md text-title-md transition-colors" data-app-link data-landing-area-link="garfagnana" href="{{ areas.garfagnana.map_url }}">
+<a class="w-full inline-flex items-center justify-center gap-2 py-2.5 rounded-lg bg-surface-container hover:bg-primary hover:text-on-primary text-primary font-title-md text-title-md transition-colors" data-app-link data-landing-area-link="borgotaro" href="{{ areas.borgotaro.map_url }}">
 <span class="material-symbols-outlined text-[16px]">map</span>
 <span>{% translate "Open on the map" %}</span>
 </a>
@@ -373,15 +373,15 @@
 <div class="bg-surface-container-lowest rounded-xl overflow-hidden shadow-sm flex flex-col justify-between hover:shadow-md transition-all">
 <div class="p-5 space-y-4">
 <div class="flex items-center justify-between gap-2">
-<span class="font-caption-topo text-caption-topo px-2 py-0.5 rounded bg-surface-container text-primary font-mono uppercase">{% translate "Tuscany, Casentino" %}</span>
+<span class="font-caption-topo text-caption-topo px-2 py-0.5 rounded bg-surface-container text-primary font-mono uppercase">{% translate "Calabria, Sila" %}</span>
 <div class="flex items-baseline gap-1 min-w-0 justify-end text-right">
-{% if areas.casentino.has_estimate %}<span class="font-title-lg text-title-lg font-mono font-bold text-on-tertiary-container num" data-landing-area="casentino">{{ areas.casentino.percent }}</span>
-<span class="font-caption-topo text-caption-topo text-outline">{{ areas.casentino.date_text }}</span>{% else %}<span class="font-body-sm text-body-sm text-on-surface-variant text-right">{{ areas.casentino.reason }}</span>{% endif %}
+{% if areas.sila.has_estimate %}<span class="font-title-lg text-title-lg font-mono font-bold text-on-tertiary-container num" data-landing-area="sila">{{ areas.sila.percent }}</span>
+<span class="font-caption-topo text-caption-topo text-outline">{{ areas.sila.date_text }}</span>{% else %}<span class="font-body-sm text-body-sm text-on-surface-variant text-right">{{ areas.sila.reason }}</span>{% endif %}
 </div>
 </div>
 <div>
-<h3 class="font-title-lg text-title-lg text-primary">{% translate "Casentino Forests" %}</h3>
-<p class="font-body-sm text-body-sm text-on-surface-variant mt-1">{% translate "Badia Prataglia, Camaldoli, La Verna" %}</p>
+<h3 class="font-title-lg text-title-lg text-primary">{% translate "Sila" %}</h3>
+<p class="font-body-sm text-body-sm text-on-surface-variant mt-1">{% translate "Mixed forest on the Sila, a high plateau of pine and beech forests." %}</p>
 </div>
 <div class="space-y-2 pt-2 border-t border-surface-container-highest font-body-sm text-body-sm">
 <div class="flex justify-between gap-3 text-on-surface-variant"><span>{% translate "Square" %}</span><span class="font-mono text-primary">500 m</span></div>
@@ -389,7 +389,7 @@
 </div>
 </div>
 <div class="p-5 pt-0">
-<a class="w-full inline-flex items-center justify-center gap-2 py-2.5 rounded-lg bg-surface-container hover:bg-primary hover:text-on-primary text-primary font-title-md text-title-md transition-colors" data-app-link data-landing-area-link="casentino" href="{{ areas.casentino.map_url }}">
+<a class="w-full inline-flex items-center justify-center gap-2 py-2.5 rounded-lg bg-surface-container hover:bg-primary hover:text-on-primary text-primary font-title-md text-title-md transition-colors" data-app-link data-landing-area-link="sila" href="{{ areas.sila.map_url }}">
 <span class="material-symbols-outlined text-[16px]">map</span>
 <span>{% translate "Open on the map" %}</span>
 </a>
@@ -398,15 +398,15 @@
 <div class="bg-surface-container-lowest rounded-xl overflow-hidden shadow-sm flex flex-col justify-between hover:shadow-md transition-all">
 <div class="p-5 space-y-4">
 <div class="flex items-center justify-between gap-2">
-<span class="font-caption-topo text-caption-topo px-2 py-0.5 rounded bg-surface-container text-primary font-mono uppercase">{% translate "Tuscany, Amiata" %}</span>
+<span class="font-caption-topo text-caption-topo px-2 py-0.5 rounded bg-surface-container text-primary font-mono uppercase">{% translate "Trentino, Val di Fiemme" %}</span>
 <div class="flex items-baseline gap-1 min-w-0 justify-end text-right">
-{% if areas.amiata.has_estimate %}<span class="font-title-lg text-title-lg font-mono font-bold text-on-tertiary-container num" data-landing-area="amiata">{{ areas.amiata.percent }}</span>
-<span class="font-caption-topo text-caption-topo text-outline">{{ areas.amiata.date_text }}</span>{% else %}<span class="font-body-sm text-body-sm text-on-surface-variant text-right">{{ areas.amiata.reason }}</span>{% endif %}
+{% if areas.fiemme.has_estimate %}<span class="font-title-lg text-title-lg font-mono font-bold text-on-tertiary-container num" data-landing-area="fiemme">{{ areas.fiemme.percent }}</span>
+<span class="font-caption-topo text-caption-topo text-outline">{{ areas.fiemme.date_text }}</span>{% else %}<span class="font-body-sm text-body-sm text-on-surface-variant text-right">{{ areas.fiemme.reason }}</span>{% endif %}
 </div>
 </div>
 <div>
-<h3 class="font-title-lg text-title-lg text-primary">{% translate "Mount Amiata" %}</h3>
-<p class="font-body-sm text-body-sm text-on-surface-variant mt-1">{% translate "Abbadia San Salvatore, Santa Fiora, Vetta Amiata" %}</p>
+<h3 class="font-title-lg text-title-lg text-primary">{% translate "Val di Fiemme" %}</h3>
+<p class="font-body-sm text-body-sm text-on-surface-variant mt-1">{% translate "Conifer forest in Val di Fiemme, a valley with large spruce forests." %}</p>
 </div>
 <div class="space-y-2 pt-2 border-t border-surface-container-highest font-body-sm text-body-sm">
 <div class="flex justify-between gap-3 text-on-surface-variant"><span>{% translate "Square" %}</span><span class="font-mono text-primary">500 m</span></div>
@@ -414,7 +414,7 @@
 </div>
 </div>
 <div class="p-5 pt-0">
-<a class="w-full inline-flex items-center justify-center gap-2 py-2.5 rounded-lg bg-surface-container hover:bg-primary hover:text-on-primary text-primary font-title-md text-title-md transition-colors" data-app-link data-landing-area-link="amiata" href="{{ areas.amiata.map_url }}">
+<a class="w-full inline-flex items-center justify-center gap-2 py-2.5 rounded-lg bg-surface-container hover:bg-primary hover:text-on-primary text-primary font-title-md text-title-md transition-colors" data-app-link data-landing-area-link="fiemme" href="{{ areas.fiemme.map_url }}">
 <span class="material-symbols-outlined text-[16px]">map</span>
 <span>{% translate "Open on the map" %}</span>
 </a>
@@ -489,7 +489,7 @@
 <span>{% translate "Free map" %}</span>
 </div>
 <h2 class="font-headline-lg-mobile text-headline-lg-mobile sm:text-headline-lg lg:text-[44px] lg:leading-[52px] tracking-tight text-on-primary font-serif">{% translate "Ready for your next trip into the forest?" %}</h2>
-<p class="font-body-lg text-body-lg text-on-primary-container max-w-2xl mx-auto leading-relaxed">{% translate "Check the rain of recent days, the weather of the day and the estimate for today and the next seven days, across Tuscany. Free, no sign-up." %}</p>
+<p class="font-body-lg text-body-lg text-on-primary-container max-w-2xl mx-auto leading-relaxed">{% translate "Check the rain of recent days, the weather of the day and the estimate for today and the next seven days, across Italy. Free, no sign-up." %}</p>
 <div class="pt-4 flex flex-col sm:flex-row items-center justify-center gap-4">
 <a class="w-full sm:w-auto inline-flex items-center justify-center gap-3 px-8 py-4 bg-surface text-primary font-title-lg text-title-lg rounded-lg shadow-xl hover:bg-surface-container transition-all group" data-app-link href="/map/">
 <span class="material-symbols-outlined text-[22px] text-primary transition-transform group-hover:scale-110">nature</span>
@@ -519,6 +519,6 @@
 </div>
 </div>
 </section>
-</div></main><footer class="w-full bg-surface-container-low pt-space-xl pb-space-lg text-on-surface-variant"><div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-12"><div class="p-space-lg mb-space-xl rounded-xl bg-surface-container-high border-l-4 border-tertiary-container flex flex-col md:flex-row items-start gap-space-md"><span class="material-symbols-outlined text-on-tertiary-container text-[24px] shrink-0 mt-0.5">info</span><div class="space-y-1"><h4 class="font-title-md text-title-md text-on-surface">{% translate "Before you go into the forest" %}</h4><p class="font-body-sm text-body-sm text-on-surface-variant leading-relaxed">{% translate "SporaMeteo estimates are experimental and do not guarantee that porcini or other species will fruit. Mountain and forest environments carry real dangers. Only eat mushrooms whose safety has been checked by ASL mycology inspectors. Check the rules and permits of your region." %}</p></div></div><div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-space-xl mb-space-xl"><div class="space-y-space-sm"><div class="flex items-center gap-space-sm">{% include "web_ui/components/logo_mark.html" with mark_class="w-8 h-8 shrink-0 text-primary" %}<span class="font-headline-md text-headline-md tracking-tight text-primary font-serif">SporaMeteo</span></div><p class="font-body-sm text-body-sm text-on-surface-variant leading-relaxed">{% translate "A free map with experimental estimates of porcini growth in the forests of Tuscany." %}</p><p class="font-caption-topo text-caption-topo text-outline uppercase tracking-wider">{% translate "Free, no account, no advertising" %}</p></div><div class="space-y-space-sm"><h5 class="font-title-md text-title-md text-on-surface">{% translate "Data sources" %}</h5><ul class="space-y-space-xs font-body-sm text-body-sm"><li class="flex items-center gap-space-xs"><span class="material-symbols-outlined text-[14px] text-primary shrink-0">satellite_alt</span><span class="text-on-surface">{% translate "Copernicus forest map" %}</span></li><li class="flex items-center gap-space-xs"><span class="material-symbols-outlined text-[14px] text-primary shrink-0">cloudy_snowing</span><span class="text-on-surface">{% translate "Open-Meteo modelled weather" %}</span></li><li class="flex items-center gap-space-xs"><span class="material-symbols-outlined text-[14px] text-primary shrink-0">map</span><span class="text-on-surface">{% translate "OpenStreetMap map data" %}</span></li></ul></div><div class="space-y-space-sm"><h5 class="font-title-md text-title-md text-on-surface">{% translate "Navigation" %}</h5><ul class="space-y-space-xs font-body-sm text-body-sm"><li><a class="hover:text-primary transition-colors" href="#come-funziona-section">{% translate "How the estimate is made" %}</a></li><li><a class="hover:text-primary transition-colors" href="#fattori-section">{% translate "Why SporaMeteo is different" %}</a></li><li><a class="hover:text-primary transition-colors" href="#etica-section">{% translate "Foraging ethics" %}</a></li><li><a class="hover:text-primary transition-colors" data-app-link href="/map/">{% translate "Map of Tuscany" %}</a></li><li><a class="hover:text-primary transition-colors" href="{% url 'privacy' %}">{% translate "Privacy" %}</a></li></ul></div><div class="space-y-space-sm"><h5 class="font-title-md text-title-md text-on-surface">{% translate "Account and favorites" %}</h5><p class="font-body-sm text-body-sm text-on-surface-variant leading-relaxed">{% translate "SporaMeteo needs no account and shows no advertising. Favorites stay in your browser and do not sync between devices." %}</p></div></div><div class="pt-space-lg border-t border-surface-container-highest flex flex-col sm:flex-row items-start sm:items-center justify-between gap-space-sm font-body-sm text-body-sm text-outline"><p>{% translate "SporaMeteo, experimental porcini estimates." %}</p></div></div></footer>
+</div></main><footer class="w-full bg-surface-container-low pt-space-xl pb-space-lg text-on-surface-variant"><div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-12"><div class="p-space-lg mb-space-xl rounded-xl bg-surface-container-high border-l-4 border-tertiary-container flex flex-col md:flex-row items-start gap-space-md"><span class="material-symbols-outlined text-on-tertiary-container text-[24px] shrink-0 mt-0.5">info</span><div class="space-y-1"><h4 class="font-title-md text-title-md text-on-surface">{% translate "Before you go into the forest" %}</h4><p class="font-body-sm text-body-sm text-on-surface-variant leading-relaxed">{% translate "SporaMeteo estimates are experimental and do not guarantee that porcini or other species will fruit. Mountain and forest environments carry real dangers. Only eat mushrooms whose safety has been checked by ASL mycology inspectors. Check the rules and permits of your region." %}</p></div></div><div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-space-xl mb-space-xl"><div class="space-y-space-sm"><div class="flex items-center gap-space-sm">{% include "web_ui/components/logo_mark.html" with mark_class="w-8 h-8 shrink-0 text-primary" %}<span class="font-headline-md text-headline-md tracking-tight text-primary font-serif">SporaMeteo</span></div><p class="font-body-sm text-body-sm text-on-surface-variant leading-relaxed">{% translate "A free map with experimental estimates of porcini growth in the forests of Italy." %}</p><p class="font-caption-topo text-caption-topo text-outline uppercase tracking-wider">{% translate "Free, no account, no advertising" %}</p></div><div class="space-y-space-sm"><h5 class="font-title-md text-title-md text-on-surface">{% translate "Data sources" %}</h5><ul class="space-y-space-xs font-body-sm text-body-sm"><li class="flex items-center gap-space-xs"><span class="material-symbols-outlined text-[14px] text-primary shrink-0">satellite_alt</span><span class="text-on-surface">{% translate "Copernicus forest map" %}</span></li><li class="flex items-center gap-space-xs"><span class="material-symbols-outlined text-[14px] text-primary shrink-0">cloudy_snowing</span><span class="text-on-surface">{% translate "Open-Meteo modelled weather" %}</span></li><li class="flex items-center gap-space-xs"><span class="material-symbols-outlined text-[14px] text-primary shrink-0">map</span><span class="text-on-surface">{% translate "OpenStreetMap map data" %}</span></li></ul></div><div class="space-y-space-sm"><h5 class="font-title-md text-title-md text-on-surface">{% translate "Navigation" %}</h5><ul class="space-y-space-xs font-body-sm text-body-sm"><li><a class="hover:text-primary transition-colors" href="#come-funziona-section">{% translate "How the estimate is made" %}</a></li><li><a class="hover:text-primary transition-colors" href="#fattori-section">{% translate "Why SporaMeteo is different" %}</a></li><li><a class="hover:text-primary transition-colors" href="#etica-section">{% translate "Foraging ethics" %}</a></li><li><a class="hover:text-primary transition-colors" data-app-link href="/map/">{% translate "Map" %}</a></li><li><a class="hover:text-primary transition-colors" href="{% url 'privacy' %}">{% translate "Privacy" %}</a></li></ul></div><div class="space-y-space-sm"><h5 class="font-title-md text-title-md text-on-surface">{% translate "Account and favorites" %}</h5><p class="font-body-sm text-body-sm text-on-surface-variant leading-relaxed">{% translate "SporaMeteo needs no account and shows no advertising. Favorites stay in your browser and do not sync between devices." %}</p></div></div><div class="pt-space-lg border-t border-surface-container-highest flex flex-col sm:flex-row items-start sm:items-center justify-between gap-space-sm font-body-sm text-body-sm text-outline"><p>{% translate "SporaMeteo, experimental porcini estimates." %}</p></div></div></footer>
 </div>
 {% endblock %}

@@ -688,8 +688,8 @@ def test_outside_resolution_keeps_point_without_selecting_square(
     expected = {
         ("en", "outside_italy"): "outside Italy",
         ("it", "outside_italy"): "fuori dall'Italia",
-        ("en", "outside_configured_coverage"): "outside Tuscany",
-        ("it", "outside_configured_coverage"): "fuori dalla Toscana",
+        ("en", "outside_configured_coverage"): "no published estimate",
+        ("it", "outside_configured_coverage"): "stima pubblicata",
     }[(language, resolve_code)]
     expect(page.locator("#mapmsgs")).to_contain_text(expected)
 

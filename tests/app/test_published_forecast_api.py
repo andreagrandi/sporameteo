@@ -4,10 +4,9 @@ from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
-from django.contrib.gis.geos import MultiPolygon, Polygon
+from django.contrib.gis.geos import Polygon
 from django.core.cache.backends.db import DatabaseCache
 from django.core.management import call_command
-from django.core.management.base import CommandError
 from django.db import connection
 from django.test import Client
 from django.test.utils import CaptureQueriesContext
@@ -18,9 +17,15 @@ from map_api import published
 from map_api.published import GRID_TO_WGS84
 from sporameteo.finds.grid import format_cell_id
 from national_forest.models import ForestCell
-from national_grid.models import GridBuildCell, GridCell, GridRegion
+from national_grid.models import GridBuildCell, GridCell
 from tests.app.test_area_api import _publish_run_for, area_fixture  # noqa: F401
-from tests.app.test_map_api import MAP_DATE, add_update, map_fixture, publish_run  # noqa: F401
+from tests.app.test_map_api import (  # noqa: F401
+    MAP_DATE,
+    add_update,
+    map_fixture,
+    map_id_of,
+    publish_run,
+)
 
 
 pytestmark = pytest.mark.django_db(transaction=True)
@@ -134,8 +139,9 @@ def test_prepared_reads_need_no_remote_access_and_agree_across_endpoints(
 
     assert [item.status_code for item in (info, squares, overview, detail)] == [200] * 4
     run_id = str(served_detail.run.id)
-    assert info.json()["run"]["run_id"] == squares.json()["run_id"] == run_id
-    assert overview.json()["run_id"] == detail.json()["selection"]["run_id"] == run_id
+    map_id = map_id_of(served_detail.run)
+    assert info.json()["run"]["run_id"] == squares.json()["run_id"] == overview.json()["run_id"] == map_id
+    assert info.json()["runs"][0]["run_id"] == detail.json()["selection"]["run_id"] == run_id
     assessment_date = update.assessment_date.isoformat()
     assert info.json()["run"]["assessment_date"] == squares.json()["assessment_date"] == assessment_date
     assert overview.json()["assessment_date"] == assessment_date
@@ -238,7 +244,7 @@ def test_a_failed_newer_run_keeps_the_previous_values_and_dates_without_shifting
         "/api/v1/squares", _squares_query(bbox=fixture["bbox"], day_offset=8),
     )
 
-    assert info["run"]["run_id"] == str(served.run.id)
+    assert info["run"]["run_id"] == map_id_of(served.run)
     assert info["run"]["assessment_date"] == MAP_DATE.isoformat()
     assert info["target_dates"] == [
         (MAP_DATE + timedelta(days=offset)).isoformat() for offset in range(2, 8)
@@ -256,7 +262,7 @@ def test_a_second_process_and_a_restart_reuse_the_entries_of_the_first(
     first = served.client.get("/api/v1/squares", query)
 
     monkeypatch.setattr(published, "map_cache", _other_process_cache)
-    map_api._TUSCANY_EXTENTS.clear()
+    map_api._REGION_EXTENTS.clear()
     map_api._coverage_cached.cache_clear()
     with CaptureQueriesContext(connection) as queries:
         second = Client().get("/api/v1/squares", query)
@@ -320,7 +326,7 @@ def test_a_new_run_shows_new_data_and_the_old_run_stays_readable_in_the_cache(
 
     assert old_rows > 0
     assert _cache_rows(pattern=f"%{old_run.id}%") == old_rows
-    assert new_response.json()["run_id"] == str(new_run.id)
+    assert new_response.json()["run_id"] == map_id_of(new_run)
     assert _square(response=new_response, cell=cell)["percentage"] == 10
     assert _square(response=new_response, cell=cell)["update_id"] == str(newer.public_id)
     assert _square(response=old_response, cell=cell)["percentage"] == 42
@@ -414,7 +420,7 @@ def test_a_cold_view_runs_the_same_number_of_queries_for_any_number_of_weather_c
     fixture = served.fixture
     query = _squares_query(bbox=fixture["bbox"])
     published.map_cache().clear()
-    map_api._TUSCANY_EXTENTS.clear()
+    map_api._REGION_EXTENTS.clear()
     with CaptureQueriesContext(connection) as few:
         few_response = served.client.get("/api/v1/squares", query)
 
@@ -459,71 +465,35 @@ def test_cache_hits_run_no_query_on_estimate_results_or_forest_cells(served: Sim
         assert len(captured) <= 3
 
 
-def test_warming_accepts_only_tuscany_and_leaves_tiles_to_the_first_request(
+def test_warming_prepares_each_published_region_and_leaves_tiles_to_the_first_request(
     served: SimpleNamespace,
 ) -> None:
     fixture = served.fixture
-    membership = fixture["cells"][0].grid_build_cell
-    far_polygon = Polygon.from_bbox((4_400_000, 2_300_000, 4_400_500, 2_300_500))
-    far_polygon.srid = 3035
-    other_region = GridRegion.objects.create(
-        build=membership.build,
-        istat_code="10",
-        name="Other region",
-        geometry=MultiPolygon(far_polygon, srid=3035),
-    )
-    far_cell = GridCell.objects.create(
-        cell_id=format_cell_id(corner_e=4_400_000, corner_n=2_300_000),
-        corner_e=4_400_000,
-        corner_n=2_300_000,
-        geometry=far_polygon,
-    )
-    far_membership = GridBuildCell.objects.create(
-        build=membership.build,
-        cell=far_cell,
-        chunk=membership.chunk,
-        owner_region=other_region,
-        land_geometry=MultiPolygon(far_polygon, srid=3035),
-        land_share=1.0,
-    )
-    ForestCell.objects.create(
-        build=fixture["build"],
-        grid_build_cell=far_membership,
-        chunk=fixture["cells"][0].chunk,
-        total_pixel_count=100,
-        valid_pixel_count=100,
-        forest_pixel_count=100,
-        valid_coverage=1.0,
-        coverage_quality="high",
-        forest_share=1.0,
-        is_forest=True,
-        weather_latitude=44.0,
-        weather_longitude=11.0,
-    )
+    publish_run(fixture=fixture, updates={"44.00,11.00": fixture["new_update"]}, region_code="10")
 
-    with pytest.raises(published.MapCacheError):
-        published.warm_published_map_cache(region_code="10")
-    with pytest.raises(CommandError):
-        call_command("warm_published_map_cache", region_code="10")
-    assert _cache_rows(pattern="%:static:%") == 0
-
-    call_command("warm_published_map_cache")
+    assert published.warm_published_map_cache(region_code="11") == {"squares": 0}
+    assert _cache_rows(pattern="%:overview-points:%") == 0
+    assert published.warm_published_map_cache(region_code="10")["squares"] > 0
+    assert _cache_rows(pattern="%:overview-points:%") == 1
+    call_command("warm_published_map_cache", region_code="all")
     # Warming prepares the summary and the overview points. Tiles wait for the first request.
     assert (_cache_rows(pattern="%:static:%"), _cache_rows(pattern="%:results:%")) == (0, 0)
-    assert _cache_rows(pattern="%:overview-points:%") == 1
+    assert _cache_rows(pattern="%:overview-points:%") == 2
+    call_command("warm_published_map_cache", region_code="09")
     longitude, latitude = GRID_TO_WGS84.transform(4_301_250, 2_300_400)
     inside = f"{longitude - 0.0012},{latitude - 0.0009},{longitude + 0.0012},{latitude + 0.0009}"
     response = served.client.get("/api/v1/squares", _squares_query(bbox=inside))
 
     assert response.status_code == 200
     assert (_cache_rows(pattern="%:static:%"), _cache_rows(pattern="%:results:%")) == (1, 1)
-    assert published.warm_published_map_cache()["squares"] > 0
+    assert published.warm_published_map_cache(region_code="09")["squares"] > 0
 
 
 def test_warming_without_a_published_run_does_nothing(
     map_fixture: dict[str, object],  # noqa: F811
 ) -> None:
-    assert published.warm_published_map_cache() == {"squares": 0}
+    assert published.warm_published_map_cache(region_code="09") == {"squares": 0}
+    call_command("warm_published_map_cache")
     assert _cache_rows() == 0
 
 

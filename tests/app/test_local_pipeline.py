@@ -7,6 +7,7 @@ services as the commands, and read the published run through the map, overview a
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 from collections.abc import Callable
 from datetime import date, timedelta
 from types import SimpleNamespace
@@ -123,7 +124,7 @@ def pipeline(tuscany: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> Simpl
     )
     region.save(update_fields=["geometry"])
     caches["map"].clear()
-    map_api._TUSCANY_EXTENTS.clear()
+    map_api._REGION_EXTENTS.clear()
     map_api._coverage_cached.cache_clear()
     state = {"today": DAY}
     monkeypatch.setattr("map_api.api._today", lambda: state["today"])
@@ -232,7 +233,7 @@ def test_map_overview_and_details_agree_on_square_date_value_update_and_credits(
         assert squares.status_code == overview.status_code == 200
         assert squares.json()["assessment_date"] == overview.json()["assessment_date"] == DAY.isoformat()
         assert squares.json()["target_date"] == overview.json()["target_date"] == day.isoformat()
-        assert squares.json()["run_id"] == overview.json()["run_id"] == str(night_d.run.id)
+        assert squares.json()["run_id"] == overview.json()["run_id"] == sha256(f"09:{night_d.run.id}".encode()).hexdigest()[:32]
         percentages = []
         for index in FOREST_SQUARES:
             square_id = night_d.square_ids[index]

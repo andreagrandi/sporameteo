@@ -75,7 +75,7 @@ def area_fixture() -> dict[str, object]:
     )
     region = GridRegion.objects.create(
         build=grid,
-        istat_code=f"R{suffix}",
+        istat_code="09",
         name=f"Area region {suffix}",
         geometry=multipolygon,
     )
@@ -1083,10 +1083,12 @@ def _other_update(*, update: EstimateUpdate, label: str) -> EstimateUpdate:
     )
 
 
-def _publish_run_for(*, update: EstimateUpdate, calculation_version: str = "area-calc-1") -> ForecastRun:
+def _publish_run_for(
+    *, update: EstimateUpdate, calculation_version: str = "area-calc-1", region_code: str = "09",
+) -> ForecastRun:
     """Publish a run that holds the update and move the pointer to it."""
     run = ForecastRun.objects.create(
-        region_code="09",
+        region_code=region_code,
         assessment_date=update.assessment_date,
         status=ForecastRun.Status.PUBLISHED,
         forest_build=update.forest_build,
@@ -1108,10 +1110,10 @@ def _publish_run_for(*, update: EstimateUpdate, calculation_version: str = "area
         state=ForecastRunCell.State.COMPLETED,
         update=update,
     )
-    pointer = PublishedForecastRun.objects.filter(region_code="09").first()
+    pointer = PublishedForecastRun.objects.filter(region_code=region_code).first()
     if pointer is None:
         PublishedForecastRun.objects.create(
-            region_code="09", current_run=run, previous_run=None, published_at=update.calculated_at,
+            region_code=region_code, current_run=run, previous_run=None, published_at=update.calculated_at,
         )
     else:
         pointer.previous_run_id = pointer.current_run_id
@@ -1155,7 +1157,7 @@ def test_area_detail_percentage_matches_real_map_square_for_same_update(
     assert feature["id"] == square_id
     assert feature["properties"]["update_id"] == str(update.public_id)
     assert feature["properties"]["percentage"] == detail_body["estimate"]["whole_percentage"]
-    assert map_response.json()["run_id"] == str(run.id)
+    assert map_response.json()["run_id"] == sha256(f"09:{run.id}".encode()).hexdigest()[:32]
     assert detail_body["selection"]["run_id"] == str(run.id)
     assert detail_body["selection"]["target_date"] == feature["properties"]["target_date"]
 
@@ -1180,6 +1182,19 @@ def test_area_detail_names_the_current_or_previous_run_and_null_for_older_update
     assert as_current == str(first.id)
     assert as_previous == str(first.id)
     assert as_older is None
+
+
+@pytest.mark.django_db(transaction=True)
+def test_area_detail_names_the_run_of_a_region_other_than_tuscany(
+    area_fixture: dict[str, object],
+) -> None:
+    update = area_fixture["update"]
+    query = {"target_date": "2026-10-11", "update_id": str(update.public_id)}
+    run = _publish_run_for(update=update, region_code="12")
+
+    selection = Client().get(f"/api/v1/areas/{area_fixture['square_id']}", query).json()["selection"]
+
+    assert selection["run_id"] == str(run.id)
 
 
 @pytest.mark.django_db(transaction=True)

@@ -99,7 +99,8 @@ def _open(
 
     def squares_route(route: Route) -> None:
         target_date = route.request.url.split("target_date=")[1].split("&")[0]
-        _json(route, _squares_for(target_date, run_id=str(current["run_id"])))
+        build = current.get("squares_for", _squares_for)
+        _json(route, build(target_date, run_id=str(current["run_id"])))
 
     page.route("**/api/v1/squares**", squares_route)
     width, height = VIEWPORTS[viewport]
@@ -315,6 +316,61 @@ def test_run_change_reloads_open_details_once_without_a_loading_state(
     assert sorted(per_date) == sorted([*TARGET_DATES, TARGET_DATES[0]])
 
 
+def _squares_of_two_regions(target_date: str, *, run_id: str) -> dict[str, object]:
+    """Give cell-zero to region 09 and cell-hundred to region 12, each with its own assessment date."""
+    response = _squares_for(target_date, run_id=run_id)
+    for feature in response["features"]:
+        if feature["properties"]["cell_id"] == "cell-hundred":
+            feature["properties"]["assessment_date"] = "2026-10-13"
+    return response
+
+
+def test_squares_of_two_regions_show_together_and_a_region_run_keeps_the_details(
+    page: Page, base_url: str
+) -> None:
+    info = _info(run_id="map-id")
+    info["runs"] = [
+        {"region_code": "09", "run_id": "run-09", "assessment_date": "2026-10-12", "published_at": "2026-10-12T03:00:00Z"},
+        {"region_code": "12", "run_id": "run-12", "assessment_date": "2026-10-13", "published_at": "2026-10-13T03:00:00Z"},
+    ]
+    _open(page, base_url, current={"info": info, "run_id": "map-id", "squares_for": _squares_of_two_regions})
+    area_requests: list[str] = []
+
+    def area_route(route: Route) -> None:
+        query = parse_qs(urlparse(route.request.url).query)
+        area_requests.append(query["target_date"][0])
+        body = _area_response(
+            cell_id="cell-hundred", target_date=query["target_date"][0], update_id=query.get("update_id", [""])[0],
+        )
+        # A detail names the run of its own region, which is not the run ID of the whole map.
+        body["selection"]["run_id"] = "run-12"
+        _json(route, body)
+
+    page.route("**/api/v1/areas/**", area_route)
+    shown = page.evaluate(
+        """
+        () => {
+          const map = window.SporaMeteoMap.map;
+          const ids = ['cell-zero', 'cell-hundred'];
+          return Object.fromEntries(ids.map((id) => {
+            const features = map.queryRenderedFeatures({layers: ['sporameteo-square-estimates']})
+              .filter((feature) => feature.properties?.cell_id === id);
+            return [id, features.map((feature) => [feature.properties.percentage, feature.properties.assessment_date])];
+          }));
+        }
+        """
+    )
+    assert shown["cell-zero"][0] == [0, "2026-10-12"]
+    assert shown["cell-hundred"][0] == [100, "2026-10-13"]
+
+    click_square(page, lng_lat=(10.645, 44.13), cell_id="cell-hundred")
+    expect(page.locator("aside[data-live-details]")).to_contain_text("100%")
+    page.wait_for_timeout(500)
+    count_after_open = len(area_requests)
+    page.wait_for_timeout(500)
+    assert len(area_requests) == count_after_open
+
+
 def test_unchanged_run_in_the_info_refresh_keeps_the_data(page: Page, base_url: str) -> None:
     page.clock.install()
     current = _open(page, base_url)
@@ -418,4 +474,4 @@ def test_square_outside_the_prepared_area_is_named_in_the_details(
         cell_id="cell-outside",
         layer="sporameteo-square-missing",
     )
-    expect(page.locator("aside[data-live-details]")).to_contain_text("outside Tuscany")
+    expect(page.locator("aside[data-live-details]")).to_contain_text("no published estimate")

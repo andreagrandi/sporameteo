@@ -98,6 +98,18 @@ def check_nightly_update(*, assessment_date: date, region_code: str | None = Non
     unpublished = _unpublished_regions(codes=codes, assessment_date=assessment_date)
     if not unpublished:
         return NightlyCheckResult(reason=PUBLISHED, message=f"The {assessment_date} forecast run is published.")
+    result = _stopped_step(assessment_date=assessment_date, region_code=region_code, unpublished=unpublished)
+    # The forecast failure message already names the regions.
+    if len(codes) > 1 and result.reason != FORECAST_FAILED:
+        return NightlyCheckResult(
+            reason=result.reason,
+            message=f"{result.message}\nRegions not published: {', '.join(unpublished)}.",
+        )
+    return result
+
+
+def _stopped_step(*, assessment_date: date, region_code: str, unpublished: tuple[str, ...]) -> NightlyCheckResult:
+    """Find the step that stopped for a night with at least one unpublished region."""
     run = ScheduledWeatherRun.objects.filter(region_code=region_code, assessment_date=assessment_date).first()
     if run is None:
         return NightlyCheckResult(
