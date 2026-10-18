@@ -16,7 +16,7 @@ from weather_on_demand.services import reopen_weather_fetch, start_scheduled_wea
 from weather_requests.eligibility import ALL_REGIONS, nightly_region_codes, nightly_run_key
 
 from .models import ForecastRun
-from .tasks import queue_tuscany_forecast
+from .tasks import queue_forecast
 
 logger = logging.getLogger(__name__)
 
@@ -166,7 +166,7 @@ def _requeue_forecast(*, run_id: uuid.UUID, assessment_date: date, region_code: 
     """Queue a new forecast task for a completed run and store its ID."""
     with transaction.atomic():
         run = ScheduledWeatherRun.objects.select_for_update().get(id=run_id)
-        run.forecast_task_id = queue_tuscany_forecast(region_code=region_code, assessment_date=assessment_date)
+        run.forecast_task_id = queue_forecast(region_code=region_code, assessment_date=assessment_date)
         if run.reason_code == "forecast_queue_failure":
             run.reason_code = "ready"
             run.full_reason = ""

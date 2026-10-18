@@ -11,7 +11,7 @@ from typing import Any
 
 from django.apps import apps
 from django.db import connections, transaction
-from django.db.models import Model, Sum
+from django.db.models import Model
 
 from national_forest import layer
 from national_forest.models import ForestBuild, ForestCell, ForestChunk
@@ -1181,113 +1181,6 @@ def _finish_terrain_build(
         status=TerrainBuild.Status.COMPLETED,
         completed_at=build.completed_at,
     )
-
-
-def validate_existing_tuscany_subset(
-    *,
-    alias: str,
-    grid_version: str,
-    forest_version: str,
-    terrain_version: str,
-    region_code: str = TUSCANY_ISTAT_CODE,
-) -> dict[str, Any]:
-    """Validate a prepared subset without changing either database."""
-    try:
-        grid = GridBuild.objects.using(alias).get(version=grid_version)
-        forest = ForestBuild.objects.using(alias).get(version=forest_version)
-        terrain = TerrainBuild.objects.using(alias).get(version=terrain_version)
-    except (GridBuild.DoesNotExist, ForestBuild.DoesNotExist, TerrainBuild.DoesNotExist) as exc:
-        raise TuscanySubsetError("The requested Tuscany subset build is missing.") from exc
-    if grid.status != GridBuild.Status.COMPLETED:
-        raise TuscanySubsetError("The Tuscany grid build is not completed.")
-    if forest.status != ForestBuild.Status.COMPLETED:
-        raise TuscanySubsetError("The Tuscany forest build is not completed.")
-    if terrain.status != TerrainBuild.Status.COMPLETED:
-        raise TuscanySubsetError("The Tuscany terrain build is not completed.")
-    region = GridRegion.objects.using(alias).filter(build=grid, istat_code=region_code)
-    if region.count() != 1:
-        raise TuscanySubsetError("The Tuscany grid must contain exactly one selected region.")
-    region_id = region.values_list("id", flat=True).get()
-    memberships = GridBuildCell.objects.using(alias).filter(build=grid)
-    if memberships.exclude(owner_region_id=region_id).exists():
-        raise TuscanySubsetError(
-            "The Tuscany grid contains a membership outside the selected region."
-        )
-    if memberships.count() != grid.cell_count:
-        raise TuscanySubsetError("The Tuscany grid cell count does not match its memberships.")
-    forest_cells = ForestCell.objects.using(alias).filter(build=forest)
-    terrain_cells = TerrainCell.objects.using(alias).filter(build=terrain)
-    target_membership_ids = set(memberships.values_list("id", flat=True))
-    _validate_habitat_memberships(
-        alias=alias,
-        model=ForestCell,
-        build_id=forest.id,
-        grid_build_id=grid.id,
-        expected_membership_ids=target_membership_ids,
-        label="target forest",
-    )
-    _validate_habitat_memberships(
-        alias=alias,
-        model=TerrainCell,
-        build_id=terrain.id,
-        grid_build_id=grid.id,
-        expected_membership_ids=target_membership_ids,
-        label="target terrain",
-    )
-    if forest_cells.count() != forest.cell_count:
-        raise TuscanySubsetError("The Tuscany forest cell count does not match its rows.")
-    if terrain_cells.count() != terrain.result_count:
-        raise TuscanySubsetError("The Tuscany terrain cell count does not match its rows.")
-    if (
-        ForestChunk.objects.using(alias)
-        .filter(build=forest)
-        .aggregate(total=Sum("cell_count"))["total"]
-        != forest.cell_count
-    ):
-        raise TuscanySubsetError("The Tuscany forest chunk counts do not match its rows.")
-    if (
-        TerrainChunk.objects.using(alias)
-        .filter(build=terrain)
-        .aggregate(total=Sum("result_count"))["total"]
-        != terrain.result_count
-    ):
-        raise TuscanySubsetError("The Tuscany terrain chunk counts do not match its rows.")
-    if forest.grid_build_id != grid.id or terrain.grid_build_id != grid.id:
-        raise TuscanySubsetError("The Tuscany habitat builds do not use the Tuscany grid.")
-    for model in apps.get_models():
-        if model._meta.app_label in {
-            "background_jobs",
-            "django_tasks_database",
-            "estimate_updates",
-            "weather_on_demand",
-            "weather_requests",
-            "weather_summaries",
-        } and model.objects.using(alias).exists():
-            raise TuscanySubsetError(
-                f"The prepared subset contains dynamic rows in {model._meta.label}."
-            )
-    if not forest.layer_path:
-        raise TuscanySubsetError("The Tuscany forest build has no layer artifact.")
-    layer_info = layer.validate_layer(path=layer.resolve_layer_path(value=forest.layer_path))
-    if layer_info["sha256"] != forest.layer_sha256:
-        raise TuscanySubsetError("The Tuscany forest layer checksum does not match the build.")
-    return {
-        "grid_version": grid.version,
-        "forest_version": forest.version,
-        "terrain_version": terrain.version,
-        "region_code": region_code,
-        "grid_cells": memberships.count(),
-        "grid_chunks": GridChunk.objects.using(alias).filter(build=grid).count(),
-        "forest_cells": forest_cells.count(),
-        "forest_chunks": ForestChunk.objects.using(alias).filter(build=forest).count(),
-        "terrain_cells": terrain_cells.count(),
-        "terrain_chunks": TerrainChunk.objects.using(alias).filter(build=terrain).count(),
-        "terrain_source_tiles": TerrainSourceTile.objects.using(alias)
-        .filter(build=terrain)
-        .count(),
-        "layer_path": forest.layer_path,
-        "layer_sha256": forest.layer_sha256,
-    }
 
 
 def _subset_fingerprint(source_fingerprint: str, version: str, region_code: str) -> str:

@@ -20,7 +20,7 @@ from estimate_updates.nightly_check import (
     retry_nightly_update,
 )
 from estimate_updates.forecast_runs import process_forecast_run, start_forecast_run
-from estimate_updates.tasks import queue_tuscany_forecast
+from estimate_updates.tasks import queue_forecast
 from tests.app.test_forecast_runs import (  # noqa: F401
     _publish_day,
     block_providers,
@@ -66,7 +66,7 @@ def _failed_weather_run(*, forest: dict[str, str]) -> ScheduledWeatherRun:
 def _failed_forecast_run(*, forest: dict[str, str]) -> ScheduledWeatherRun:
     clock = _clock()
     run = _drive(run=_start(forest=forest, clock=clock), clock=clock, transport=_Transport(clock=clock))
-    task_id = queue_tuscany_forecast(region_code="09", assessment_date=DAY)
+    task_id = queue_forecast(region_code="09", assessment_date=DAY)
     DBTaskResult.objects.get(id=task_id).set_failed(RuntimeError("The forecast broke on purpose."))
     run.forecast_task_id = task_id
     run.save(update_fields=["forecast_task_id"])

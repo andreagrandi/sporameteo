@@ -10,7 +10,8 @@ cannot go missing without notice.
 
 The dump was built on 15 October 2026 from `master` at commit `965bfd2` plus
 the changes that store the forest layer path relative to the repository and
-add `prepare_tuscany_inputs --skip-source-files`.
+add the `--skip-source-files` option of the Tuscany input preparation, now
+`prepare_region_inputs --regions 09`.
 
 - Source database: `sporameteo_tuscany_vps`, 221 MB on the laptop.
 - Dump file: `data/processed/hosting/sporameteo_tuscany_vps.dump`. Git ignores
@@ -37,11 +38,14 @@ docker compose exec -T database createdb -U sporameteo sporameteo_tuscany_vps
 export SPORAMETEO_DB_NAME=sporameteo_tuscany_vps
 export SPORAMETEO_SOURCE_DB_NAME=sporameteo_native
 uv run python apps/application/manage.py migrate --noinput
-uv run python apps/application/manage.py prepare_tuscany_map_database
+uv run python apps/application/manage.py prepare_region_map_database --regions 09 \
+  --grid-build-version tuscany-grid-italy-500m-istat-2026-01-01-v1-56 \
+  --forest-build-version tuscany-forest-italy-forest-copernicus-2018-v1-56 \
+  --terrain-build-version tuscany-terrain-italy-terrain-glo30-2021-v2-56
 uv run python apps/application/manage.py load_municipalities
 export SPORAMETEO_FOREST_BUILD_VERSION=tuscany-forest-italy-forest-copernicus-2018-v1-56
 export SPORAMETEO_TERRAIN_BUILD_VERSION=tuscany-terrain-italy-terrain-glo30-2021-v2-56
-uv run python apps/application/manage.py prepare_tuscany_inputs --json
+uv run python apps/application/manage.py prepare_region_inputs --regions 09 --json
 mkdir -p data/processed/hosting
 docker compose exec -T database pg_dump \
   --format=custom --no-owner --no-acl \
@@ -49,11 +53,13 @@ docker compose exec -T database pg_dump \
   > data/processed/hosting/sporameteo_tuscany_vps.dump
 ```
 
-On the laptop, `prepare_tuscany_map_database` took 41 seconds,
-`prepare_tuscany_inputs` took 44 seconds to sample host trees for 71,031
-squares, and `pg_dump` took 2 seconds. `prepare_tuscany_map_database` also
-rewrites the Tuscany forest layer file. The new file had the same SHA-256 as
-the old one.
+On the laptop, the Tuscany map database preparation took 41 seconds, the
+Tuscany input preparation took 44 seconds to sample host trees for 71,031
+squares, and `pg_dump` took 2 seconds. Those two commands are now
+`prepare_region_map_database --regions 09` and
+`prepare_region_inputs --regions 09`. The map database command also rewrote
+the Tuscany forest layer file. The new file had the same SHA-256 as the old
+one.
 
 ### Restore check
 
@@ -78,7 +84,7 @@ SPORAMETEO_DB_NAME=sporameteo_tuscany_restore_check \
 SPORAMETEO_FOREST_BUILD_VERSION=tuscany-forest-italy-forest-copernicus-2018-v1-56 \
 SPORAMETEO_TERRAIN_BUILD_VERSION=tuscany-terrain-italy-terrain-glo30-2021-v2-56 \
 SPORAMETEO_JRC_DIRECTORY=/path/to/jrc \
-python apps/application/manage.py prepare_tuscany_inputs \
+python apps/application/manage.py prepare_region_inputs --regions 09 \
   --dry-run --json --skip-source-files
 ```
 
@@ -228,7 +234,7 @@ layer request answers 503.
 
 ### Files that stay on the laptop
 
-`prepare_tuscany_inputs` normally checks the checksums of the source files
+`prepare_region_inputs --regions 09` normally checks the checksums of the source files
 behind the forest and terrain builds. The app does not read them while it
 runs, so they stay off the VPS:
 

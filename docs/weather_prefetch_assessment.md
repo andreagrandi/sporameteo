@@ -167,7 +167,7 @@ completed national runs or clear the overlay between finished batches.
 window: three history pieces of 13, 13 and 4 days plus one forecast of 8 days
 for the first load, and yesterday plus one forecast of 8 days for a normal
 night. The budget report lists counted calls and HTTP requests as separate
-numbers. The Tuscany refresh command `refresh_tuscany_weather` follows the same
+numbers. The nightly refresh command `refresh_weather` follows the same
 plan.
 
 ## Immediate database changes

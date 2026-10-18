@@ -250,7 +250,7 @@ def start_forecast_run(
     if missing:
         raise ForecastRunError(
             f"{len(missing)} of {len(plan.cells)} weather cells have no ready weather for "
-            f"{assessment_date.isoformat()}. Run refresh_tuscany_weather first."
+            f"{assessment_date.isoformat()}. Run refresh_weather first."
         )
     with transaction.atomic():
         run, created = ForecastRun.objects.select_for_update().get_or_create(

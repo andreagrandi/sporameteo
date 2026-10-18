@@ -539,10 +539,10 @@ def test_unknown_regions_are_rejected(region_code: str, forest) -> None:
 
 def test_command_rejects_unknown_regions_and_unknown_forest_builds(forest) -> None:
     with pytest.raises(CommandError, match="Unknown region codes"):
-        call_command("refresh_tuscany_weather", "--dry-run", "--region-code=99", stdout=io.StringIO())
+        call_command("refresh_weather", "--dry-run", "--region-code=99", stdout=io.StringIO())
     with pytest.raises(CommandError, match="No forest build"):
         call_command(
-            "refresh_tuscany_weather", "--dry-run", "--forest-build-version=missing", stdout=io.StringIO()
+            "refresh_weather", "--dry-run", "--forest-build-version=missing", stdout=io.StringIO()
         )
 
 
@@ -570,7 +570,7 @@ def test_dry_run_prints_the_plan_and_writes_nothing(forest) -> None:
     before = _table_counts()
     out = io.StringIO()
 
-    call_command("refresh_tuscany_weather", "--dry-run", f"--assessment-date={DAY.isoformat()}", stdout=out)
+    call_command("refresh_weather", "--dry-run", f"--assessment-date={DAY.isoformat()}", stdout=out)
 
     text = out.getvalue()
     assert "Dry run for 2026-10-11, no data written" in text
@@ -588,7 +588,7 @@ def test_dry_run_counts_the_cells_of_two_regions_once(forest) -> None:
     out = io.StringIO()
 
     call_command(
-        "refresh_tuscany_weather",
+        "refresh_weather",
         "--dry-run",
         "--region-code=all",
         f"--assessment-date={DAY.isoformat()}",
@@ -608,7 +608,7 @@ def test_dry_run_shows_the_api_calls_a_fallback_run_has_left(forest) -> None:
     weather_services.run_scheduled_weather_step(run_id=run.id, clock=clock, transport=_Transport(clock=clock))
     out = io.StringIO()
 
-    call_command("refresh_tuscany_weather", "--dry-run", f"--assessment-date={DAY.isoformat()}", "--json", stdout=out)
+    call_command("refresh_weather", "--dry-run", f"--assessment-date={DAY.isoformat()}", "--json", stdout=out)
 
     plan = json.loads(out.getvalue())
     assert plan["api_counted_calls_left"] == 6
@@ -648,7 +648,7 @@ def test_dry_run_matches_the_real_plan_for_an_initial_load_and_a_refresh(forest)
 def test_command_starts_a_run_and_prints_its_id(forest) -> None:
     out = io.StringIO()
 
-    call_command("refresh_tuscany_weather", f"--assessment-date={DAY.isoformat()}", stdout=out)
+    call_command("refresh_weather", f"--assessment-date={DAY.isoformat()}", stdout=out)
 
     run = ScheduledWeatherRun.objects.get()
     assert f"run_id={run.id}" in out.getvalue()
@@ -668,16 +668,16 @@ def test_worker_claims_a_scheduled_run_under_one_logical_key_per_run(forest) -> 
 
 def test_worker_locks_a_forecast_task_by_region_and_date() -> None:
     task_result = DBTaskResult(
-        task_path="estimate_updates.tasks.tuscany_forecast_task",
+        task_path="estimate_updates.tasks.forecast_task",
         args_kwargs={"args": [], "kwargs": {"region_code": "09", "assessment_date": DAY.isoformat()}},
     )
     missing = DBTaskResult(
-        task_path="estimate_updates.tasks.tuscany_forecast_task",
+        task_path="estimate_updates.tasks.forecast_task",
         args_kwargs={"args": [], "kwargs": {}},
     )
 
     assert SporaMeteoWorker._logical_lock_keys_for_task(None, task_result) == (
-        f"tuscany-forecast:09:{DAY.isoformat()}",
+        f"forecast:09:{DAY.isoformat()}",
     )
     assert SporaMeteoWorker._logical_lock_keys_for_task(None, missing) == ()
 
