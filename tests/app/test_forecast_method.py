@@ -12,6 +12,7 @@ from sporameteo.forecast_method import (
     METHOD_V2,
     METHOD_V3,
     METHOD_V4,
+    METHOD_V5,
     HostTrees,
     DailyTemperatures,
     ForecastInputs,
@@ -35,7 +36,7 @@ def test_current_method_uses_recent_rain_without_the_v3_older_rain_veto() -> Non
                      daily_weather=days, daily_weather_source_id="test:30-days")
     current = calculate_versioned_forecast(inputs=inputs)
     legacy = calculate_versioned_forecast(inputs=inputs, method=METHOD_V3)
-    assert current.method_version == METHOD_V4.version
+    assert current.method_version == METHOD_V5.version
     assert current.whole_percentage > 5
     assert legacy.whole_percentage == 5
     assert current.experimental_unvalidated is True
@@ -707,21 +708,24 @@ def _thirty_days(*, temperatures=None, skip: int | None = None, missing: tuple[i
     return tuple(days[1:] if skip is not None else days)
 
 
-def _fast_and_slow(*, base: ForecastInputs, forest_shares: list, altitudes: list) -> tuple[list, list]:
+def _fast_and_slow(
+    *, base: ForecastInputs, forest_shares: list, altitudes: list, method=METHOD_V4,
+) -> tuple[list, list]:
     from sporameteo.forecast_method import calculate_v4_scores
 
-    fast = calculate_v4_scores(inputs=base, forest_shares=forest_shares, altitudes=altitudes)
+    fast = calculate_v4_scores(inputs=base, forest_shares=forest_shares, altitudes=altitudes, method=method)
     slow = []
     for forest, altitude in zip(forest_shares, altitudes, strict=True):
         result = calculate_versioned_forecast(inputs=replace(
             base,
             forest_share=None if forest is None else make_input(role="forest_share", value=forest),
             square_altitude=None if altitude is None else make_input(role="square_altitude", value=altitude),
-        ))
+        ), method=method)
         slow.append((result.whole_percentage, result.unavailable_reason))
     return fast, slow
 
 
+@pytest.mark.parametrize("method", [METHOD_V4, METHOD_V5])
 @pytest.mark.parametrize("reference_altitude", [500.0, None])
 @pytest.mark.parametrize(
     "weather",
@@ -735,7 +739,7 @@ def _fast_and_slow(*, base: ForecastInputs, forest_shares: list, altitudes: list
         _thirty_days(temperatures=(30.0, 29.0, 6.5, 3.0, 0.1, -4.0, 20.0)),
     ],
 )
-def test_fast_v4_scores_equal_the_full_calculation_square_by_square(weather, reference_altitude) -> None:
+def test_fast_v4_scores_equal_the_full_calculation_square_by_square(weather, reference_altitude, method) -> None:
     forests = [None, 0.05, 0.1, 0.5, 1.0]
     altitudes = [None, -20.0, 0.0, 200.0, 500.0, 1500.0]
     pairs = [(forest, altitude) for forest in forests for altitude in altitudes]
@@ -744,7 +748,8 @@ def test_fast_v4_scores_equal_the_full_calculation_square_by_square(weather, ref
         daily_weather=weather,
         daily_weather_source_id="test:30-days",
     )
-    fast, slow = _fast_and_slow(base=base, forest_shares=[p[0] for p in pairs], altitudes=[p[1] for p in pairs])
+    fast, slow = _fast_and_slow(base=base, forest_shares=[p[0] for p in pairs], altitudes=[p[1] for p in pairs],
+                              method=method)
     assert fast == slow
 
 
@@ -770,3 +775,15 @@ def test_fast_v4_scores_raise_where_the_full_calculation_raises(weather, forest,
         ))
     with pytest.raises(ValueError):
         calculate_v4_scores(inputs=base, forest_shares=[0.5, forest], altitudes=[500.0, altitude])
+
+
+def test_v5_result_carries_the_v5_version_and_v4_keeps_its_own() -> None:
+    inputs = replace(make_inputs(old_rain=0.0, recent_rain=70.0),
+                     daily_weather=_thirty_days(), daily_weather_source_id="test:30-days")
+    assert calculate_versioned_forecast(inputs=inputs, method=METHOD_V5).method_version == "porcini-experimental-v5"
+    assert calculate_versioned_forecast(inputs=inputs, method=METHOD_V4).method_version == "porcini-experimental-v4"
+
+
+def test_modified_v5_parameters_are_rejected_as_frozen() -> None:
+    with pytest.raises(ValueError, match="frozen"):
+        calculate_versioned_forecast(inputs=make_inputs(), method=replace(METHOD_V5, maximum_drying_mm=1.0))

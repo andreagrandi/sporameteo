@@ -14,7 +14,8 @@ METHOD_VERSION_V1 = "porcini-experimental-v1"
 METHOD_VERSION_V2 = "porcini-experimental-v2"
 METHOD_VERSION_V3 = "porcini-experimental-v3"
 METHOD_VERSION_V4 = "porcini-experimental-v4"
-METHOD_VERSION = METHOD_VERSION_V4
+METHOD_VERSION_V5 = "porcini-experimental-v5"
+METHOD_VERSION = METHOD_VERSION_V5
 EVENT_KEY = "visible_porcini_fruiting_bodies_in_500m_cell_on_italian_date"
 
 OLD_RAIN_KEY = "older_rain"
@@ -152,19 +153,30 @@ class ForecastMethodV4Config(ForecastMethodV3Config):
     """Use thirty days of moisture history with one experimental score."""
 
     version: str = METHOD_VERSION_V4
+    maximum_drying_mm: float | None = None
+
+
+@dataclass(frozen=True)
+class ForecastMethodV5Config(ForecastMethodV4Config):
+    """Cap the daily drying of the water store at the forest-floor rate measured on rain-free days."""
+
+    version: str = METHOD_VERSION_V5
+    maximum_drying_mm: float | None = 0.5
 
 
 METHOD_V1 = ForecastMethodConfig()
 METHOD_V2 = ForecastMethodV2Config()
 METHOD_V3 = ForecastMethodV3Config()
 METHOD_V4 = ForecastMethodV4Config()
+METHOD_V5 = ForecastMethodV5Config()
 METHODS_BY_VERSION: dict[str, ForecastMethodConfig | ForecastMethodV2Config] = {
     METHOD_V1.version: METHOD_V1,
     METHOD_V2.version: METHOD_V2,
     METHOD_V3.version: METHOD_V3,
     METHOD_V4.version: METHOD_V4,
+    METHOD_V5.version: METHOD_V5,
 }
-CURRENT_METHOD = METHOD_V4
+CURRENT_METHOD = METHOD_V5
 
 
 @dataclass(frozen=True)
@@ -211,8 +223,8 @@ def _validate_date(*, value: object, name: str) -> date:
 
 def _validate_method(*, method: ForecastMethodConfig | ForecastMethodV2Config) -> None:
     if isinstance(method, ForecastMethodV4Config):
-        if method != METHOD_V4:
-            raise ValueError(f"{METHOD_VERSION_V4} parameters are frozen")
+        if method != METHOD_V4 and method != METHOD_V5:
+            raise ValueError(f"{method.version} parameters are frozen")
         return
     if isinstance(method, ForecastMethodV3Config):
         if method != METHOD_V3:
@@ -764,7 +776,10 @@ def _calculate_v4(*, inputs: ForecastInputs, method: ForecastMethodV4Config) -> 
     adjustment = method.temperature_lapse_rate_c_per_m * (altitude - reference)
     days = tuple(replace(day, temperature_c=None if day.temperature_c is None else day.temperature_c - adjustment)
                  for day in inputs.daily_weather)
-    result = calculate_candidate(target_date=inputs.target_date, days=days, forest_share=forest)
+    result = calculate_candidate(
+        target_date=inputs.target_date, days=days, forest_share=forest,
+        maximum_drying_mm=method.maximum_drying_mm,
+    )
     facts = []
     if result.score is not None:
         for role, value, unit, factor, length in (
@@ -839,7 +854,7 @@ def calculate_v4_scores(
                         raise ValueError(f"{name} must be finite.")
                     if name != "temperature_c" and value < 0:
                         raise ValueError(f"{name} cannot be negative.")
-            shared.append((None, _moisture(days=days, initial_mm=40.0)[0], days))
+            shared.append((None, _moisture(days=days, initial_mm=40.0, maximum_drying_mm=method.maximum_drying_mm)[0], days))
         return shared[0]
 
     trees = host_trees if host_trees is not None else [None] * len(forest_shares)

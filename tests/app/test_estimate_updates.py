@@ -607,7 +607,7 @@ def _create_followup_snapshot(
 
 
 @pytest.mark.django_db(transaction=True)
-def test_default_method_stores_v4_with_thirty_preceding_weather_days(
+def test_default_method_stores_v5_with_thirty_preceding_weather_days(
     complete_estimate_fixture: dict[str, object],
 ) -> None:
     snapshot = complete_estimate_fixture["snapshot"]
@@ -635,8 +635,8 @@ def test_default_method_stores_v4_with_thirty_preceding_weather_days(
         terrain_build_version=terrain.version,
     )
 
-    assert prepared.method_version == "porcini-experimental-v4"
-    assert default_prepared.method_version == "porcini-experimental-v4"
+    assert prepared.method_version == "porcini-experimental-v5"
+    assert default_prepared.method_version == "porcini-experimental-v5"
     assert len(calculated_inputs) == 8
     for days_ahead, inputs in enumerate(calculated_inputs):
         assert len(inputs.daily_weather) == 30

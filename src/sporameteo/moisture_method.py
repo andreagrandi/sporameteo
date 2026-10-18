@@ -60,12 +60,19 @@ Interpolation and the outer endpoints are provisional choices.
     raise AssertionError("Temperature interval was not found.")
 
 
-def _moisture(*, days: tuple[WeatherDay, ...], initial_mm: float) -> tuple[float, float]:
+def _moisture(
+    *, days: tuple[WeatherDay, ...], initial_mm: float, maximum_drying_mm: float | None = None,
+) -> tuple[float, float]:
     water = initial_mm
     factors = []
     for day in days:
+        drying = 0.5 * day.et0_mm
+        if maximum_drying_mm is not None:
+            # Paulsen and Weiler 2026, HESS 30, 4305-4319, Table 5, https://doi.org/10.5194/hess-30-4305-2026:
+            # the forest floor loses about 0.5 mm per rain-free day, so high et0 must not dry it faster.
+            drying = min(drying, maximum_drying_mm)
         # The cap tests runoff sensitivity without pretending daily rain reveals storm intensity.
-        water = min(80.0, max(0.0, 0.95 * water + min(day.rain_mm, 25.0) - 0.5 * day.et0_mm))
+        water = min(80.0, max(0.0, 0.95 * water + min(day.rain_mm, 25.0) - drying))
         factors.append(min(1.0, water / 40.0))
     # Recent persistence allows a gradual response and avoids a fixed emergence date.
     return min(factors[-1], sum(factors[-7:]) / 7), water
@@ -78,6 +85,7 @@ def _score(*, moisture: float, temperature: float) -> int:
 
 def calculate_candidate(
     *, target_date: date, days: tuple[WeatherDay, ...], forest_share: float | None,
+    maximum_drying_mm: float | None = None,
 ) -> CandidateResult:
     """Require 30 complete preceding dates and return an experimental score.
 
@@ -102,9 +110,9 @@ Missing weather remains unavailable and never becomes zero rainfall.
             if name != "temperature_c" and value < 0:
                 raise ValueError(f"{name} cannot be negative.")
     temperature = sum(temperature_response(temperature_c=day.temperature_c) for day in days[-7:]) / 7
-    moisture, water = _moisture(days=days, initial_mm=40.0)
-    dry, _ = _moisture(days=days, initial_mm=0.0)
-    wet, _ = _moisture(days=days, initial_mm=80.0)
+    moisture, water = _moisture(days=days, initial_mm=40.0, maximum_drying_mm=maximum_drying_mm)
+    dry, _ = _moisture(days=days, initial_mm=0.0, maximum_drying_mm=maximum_drying_mm)
+    wet, _ = _moisture(days=days, initial_mm=80.0, maximum_drying_mm=maximum_drying_mm)
     return CandidateResult(
         score=_score(moisture=moisture, temperature=temperature),
         unavailable_reason=None,

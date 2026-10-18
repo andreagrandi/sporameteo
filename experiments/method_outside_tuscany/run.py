@@ -1,4 +1,4 @@
-"""Method outside Tuscany: the current method's daily estimate at 10 forest places, from the Open-Meteo files alone.
+"""Method outside Tuscany: the daily v4 and v5 estimates at 11 forest places, from the Open-Meteo files alone.
 
 The script reads public Open-Meteo files and the local database read-only. It calls no weather API and writes nothing to the database.
 """
@@ -54,6 +54,19 @@ PLACE_COLUMNS = [
 ]
 
 
+FIND_COLUMNS = (
+    "place",
+    "find_date",
+    "estimate_median_v4",
+    "estimate_median_v5",
+    "factor_retained_water_v4",
+    "factor_retained_water_v5",
+    "factor_temperature",
+    "rain_mm_on_the_day",
+    "rain_mm_in_the_30_days_before",
+)
+
+
 def start_django() -> None:
     """Start Django and make every query of this session read-only."""
     application = ROOT / "apps" / "application"
@@ -77,7 +90,7 @@ def start_django() -> None:
     from national_grid.models import GridBuildCell
     from national_terrain.models import TerrainCell
     from sporameteo import host_trees
-    from sporameteo.forecast_method import CURRENT_METHOD, calculate_forecast
+    from sporameteo.forecast_method import METHOD_V4, METHOD_V5, calculate_forecast
     from sporameteo.weather.policy import PIPELINE_VERSION
     from weather_requests.eligibility import weather_cell
     from weather_summaries import services as summary_services
@@ -95,7 +108,8 @@ def start_django() -> None:
     db.GridBuildCell = GridBuildCell
     db.TerrainCell = TerrainCell
     db.host_trees = host_trees
-    db.CURRENT_METHOD = CURRENT_METHOD
+    db.METHOD_V4 = METHOD_V4
+    db.METHOD_V5 = METHOD_V5
     db.calculate_forecast = calculate_forecast
     db.PIPELINE_VERSION = PIPELINE_VERSION
     db.weather_cell = weather_cell
@@ -324,18 +338,72 @@ def hour_ranges(*, hours: bucket_files.HoursRead) -> dict[str, Any]:
     return result
 
 
+def add_missing_cells(
+    *,
+    settings: dict[str, Any],
+    missing: list[dict[str, Any]],
+    weather_dir: Path,
+    hours: bucket_files.HoursRead,
+    matches: dict[str, bucket_files.Match],
+    meta: dict[str, Any],
+    last_day: date,
+) -> tuple[bucket_files.HoursRead, dict[str, bucket_files.Match], dict[str, Any]]:
+    """Read only the cells that are not saved yet, with the saved days, and save them together with the old ones."""
+    started = time.monotonic()
+    saved_first_day = date.fromisoformat(meta["first_day"])
+    cells = {place["cell_key"]: (place["cell_latitude"], place["cell_longitude"]) for place in missing}
+    print(f"Reading {len(cells)} new cell(s) from the bucket: {', '.join(sorted(cells))}", flush=True)
+    source = bucket_files.BucketSource(read_ahead_bytes=settings["read_ahead_bytes"])
+    new_matches = bucket_files.match_cells(source=source, cells=cells)
+    new_hours = bucket_files.read_cell_hours(
+        source=source, matches=new_matches, first_day=saved_first_day, last_day=last_day, threads=settings["threads"]
+    )
+    saved_timestamps = next(iter(hours.cells.values())).timestamps
+    for key, cell in new_hours.cells.items():
+        if cell.timestamps != saved_timestamps:
+            raise RuntimeError(f"The hours of the new cell {key} differ from the saved hours. Move the saved weather away to read all cells again.")
+    extra_requests = source.request_count()
+    extra_megabytes = round(source.bytes_read() / 1e6, 2)
+    merged = bucket_files.HoursRead(
+        cells={**hours.cells, **new_hours.cells}, file_modified={**hours.file_modified, **new_hours.file_modified}
+    )
+    merged_matches = {**matches, **new_matches}
+    meta = {
+        **meta,
+        "http_requests": meta["http_requests"] + extra_requests,
+        "megabytes": round(meta["megabytes"] + extra_megabytes, 2),
+        "extra_cells_read": [
+            *meta.get("extra_cells_read", []),
+            {"cells": sorted(cells), "http_requests": extra_requests, "megabytes": extra_megabytes, "read_at": now_utc(),
+             "seconds": round(time.monotonic() - started, 1)}
+        ],
+        "http_requests_this_run": extra_requests,
+        "hour_ranges": {**meta["hour_ranges"], **hour_ranges(hours=new_hours)},
+        "from_cache": False,
+    }
+    save_weather(directory=weather_dir, hours=merged, matches=merged_matches, info={k: v for k, v in meta.items() if k not in ("cell_keys", "matches", "file_modified")})
+    return merged, merged_matches, meta
+
+
 def get_weather(
     *, settings: dict[str, Any], places: list[dict[str, Any]], weather_dir: Path, first_day: date, last_day: date
 ) -> tuple[bucket_files.HoursRead, dict[str, bucket_files.Match], dict[str, Any]]:
     """Return the hourly weather of every place cell, from the saved files when they match, otherwise from one bucket read."""
-    keys = sorted(place["cell_key"] for place in places)
+    keys = sorted({place["cell_key"] for place in places})
     meta_path = weather_dir / "hours_meta.json"
     if meta_path.is_file() and (weather_dir / "hours.npz").is_file():
         hours, matches, meta = load_weather(directory=weather_dir)
-        if sorted(meta["cell_keys"]) == keys and meta["last_day"] == last_day.isoformat() and meta["requested_first_day"] == first_day.isoformat():
-            meta["from_cache"] = True
-            print(f"Weather taken from {weather_dir}, no bucket request", flush=True)
-            return hours, matches, meta
+        saved_keys = set(meta["cell_keys"])
+        if saved_keys <= set(keys) and meta["last_day"] == last_day.isoformat() and meta["requested_first_day"] == first_day.isoformat():
+            missing = [place for place in places if place["cell_key"] not in saved_keys]
+            if not missing:
+                meta["from_cache"] = True
+                meta["http_requests_this_run"] = 0
+                print(f"Weather taken from {weather_dir}, no bucket request", flush=True)
+                return hours, matches, meta
+            return add_missing_cells(
+                settings=settings, missing=missing, weather_dir=weather_dir, hours=hours, matches=matches, meta=meta, last_day=last_day
+            )
         raise RuntimeError(f"The saved weather in {weather_dir} is for other cells or days. Move it away to read the files again.")
 
     started = time.monotonic()
@@ -525,7 +593,7 @@ def estimate_place(
     terrain_id: Any,
     target_days: list[date],
 ) -> list[dict[str, Any]]:
-    """Calculate the estimate of every square for every target day, as on that day with zero days ahead."""
+    """Calculate the v4 and v5 estimates of every square for every target day, as on that day with zero days ahead."""
     results: list[dict[str, Any]] = []
     for day in target_days:
         snapshot = db.WeatherSnapshot(
@@ -534,7 +602,9 @@ def estimate_place(
         known = {key: row for key, row in rows.items() if key <= day}
         summary = db.summary_services._make_summary(snapshot=snapshot, assessment_date=day, target_date=day, rows=known)
         percentages: list[int] = []
+        percentages_v5: list[int] = []
         factors: dict[str, list[float]] = defaultdict(list)
+        factors_v5: dict[str, list[float]] = defaultdict(list)
         for forest_cell, terrain_cell, host_trees in inputs:
             forecast_inputs = db.estimate_services._forecast_inputs(
                 snapshot=snapshot,
@@ -545,14 +615,26 @@ def estimate_place(
                 daily_rows=known,
                 host_trees=host_trees,
             )
-            forecast = db.calculate_forecast(inputs=forecast_inputs, method=db.CURRENT_METHOD)
-            if forecast.whole_percentage is not None:
-                percentages.append(forecast.whole_percentage)
-            # v4 shows host trees as facts but leaves them out of the score, so only scored factors are kept.
-            for fact in forecast.ordered_facts:
-                if fact.normalized_factor is not None:
-                    factors[fact.role_key].append(fact.normalized_factor)
-        results.append({"date": day, "percentages": percentages, "factors": {role: float(median(values)) for role, values in factors.items()}})
+            for method, kept_percentages, kept_factors in (
+                (db.METHOD_V4, percentages, factors),
+                (db.METHOD_V5, percentages_v5, factors_v5),
+            ):
+                forecast = db.calculate_forecast(inputs=forecast_inputs, method=method)
+                if forecast.whole_percentage is not None:
+                    kept_percentages.append(forecast.whole_percentage)
+                # v4 and v5 show host trees as facts but leave them out of the score, so only scored factors are kept.
+                for fact in forecast.ordered_facts:
+                    if fact.normalized_factor is not None:
+                        kept_factors[fact.role_key].append(fact.normalized_factor)
+        results.append(
+            {
+                "date": day,
+                "percentages": percentages,
+                "percentages_v5": percentages_v5,
+                "factors": {role: float(median(values)) for role, values in factors.items()},
+                "factors_v5": {role: float(median(values)) for role, values in factors_v5.items()},
+            }
+        )
     return results
 
 
@@ -573,7 +655,7 @@ def month_label(*, day: date) -> str:
 
 
 def run(context: RunContext) -> None:
-    """Estimate every day of the last 12 months at 10 places outside Tuscany and write the three tables."""
+    """Estimate every day of the last 12 months at 11 places and write the four tables."""
     settings = context.config
     started = time.monotonic()
     first_day = date.fromisoformat(settings["first_day"])
@@ -621,7 +703,7 @@ def run(context: RunContext) -> None:
             "http_requests_of_the_read": weather_info["http_requests"],
             "megabytes_of_the_read": weather_info["megabytes"],
             "seconds_of_the_read": weather_info["seconds_total"],
-            "http_requests_this_run": 0 if weather_info["from_cache"] else weather_info["http_requests"],
+            "http_requests_this_run": weather_info.get("http_requests_this_run", 0 if weather_info["from_cache"] else weather_info["http_requests"]),
             "hour_ranges": weather_info["hour_ranges"],
         },
     )
@@ -640,10 +722,12 @@ def run(context: RunContext) -> None:
     month_rows: list[dict[str, Any]] = []
     roles: list[str] = []
     per_place_days: dict[str, list[dict[str, Any]]] = {}
+    per_place_rows: dict[str, dict[date, Any]] = {}
     phase = time.monotonic()
     for place in places:
         key = place["cell_key"]
         rows = daily_rows(hours=hours.cells[key], first_day=weather_first, last_day=last_day, key=key)
+        per_place_rows[place["name"]] = rows
         match = matches[key]
         elevation = None if math.isnan(match.place_height) else match.place_height
         place_started = time.monotonic()
@@ -683,6 +767,7 @@ def run(context: RunContext) -> None:
         for result in results:
             row = rows[result["date"]]
             values = result["percentages"]
+            values_v5 = result["percentages_v5"]
             days.append(
                 {
                     "place": place["name"],
@@ -691,7 +776,13 @@ def run(context: RunContext) -> None:
                     "estimate_median": rounded(float(np.median(values)), 1) if values else "",
                     "estimate_p90": rounded(float(np.percentile(values, 90)), 1) if values else "",
                     "estimate_max": max(values) if values else "",
+                    "estimate_median_v5": rounded(float(np.median(values_v5)), 1) if values_v5 else "",
+                    "estimate_p90_v5": rounded(float(np.percentile(values_v5, 90)), 1) if values_v5 else "",
+                    "estimate_max_v5": max(values_v5) if values_v5 else "",
+                    "factor_retained_water_v5": rounded(result["factors_v5"].get("retained_water"), 3),
                     "_factors": result["factors"],
+                    "_factors_v5": result["factors_v5"],
+                    "_values_v5": values_v5,
                     "mean_temperature_c": rounded(row.mean_temperature_c),
                     "min_temperature_c": rounded(row.min_temperature_c),
                     "rain_mm": rounded(row.rain_mm),
@@ -703,6 +794,7 @@ def run(context: RunContext) -> None:
     summary["phases_seconds"]["estimates"] = round(time.monotonic() - phase, 1)
 
     radius = settings["find_radius_km"]
+    find_rows: list[dict[str, Any]] = []
     for place in places:
         nearby = [
             record
@@ -718,12 +810,35 @@ def run(context: RunContext) -> None:
         in_window = Counter(record["event_date"][:7] for record in nearby if target_days[0].isoformat() <= record["event_date"] <= last_day.isoformat())
         by_month_of_year = Counter(int(record["event_date"][5:7]) for record in nearby)
         summary.setdefault("finds_nearby", {})[place["name"]] = len(nearby)
+        place_days = {day["date"]: day for day in per_place_days[place["name"]]}
+        place_weather = per_place_rows[place["name"]]
+        for record in sorted(nearby, key=lambda item: item["event_date"]):
+            found_on = record["event_date"]
+            if found_on not in place_days:
+                continue
+            day = place_days[found_on]
+            found_date = date.fromisoformat(found_on)
+            before = [place_weather[found_date - timedelta(days=offset)].rain_mm for offset in range(1, 31) if found_date - timedelta(days=offset) in place_weather]
+            find_rows.append(
+                {
+                    "place": place["name"],
+                    "find_date": found_on,
+                    "estimate_median_v4": day["estimate_median"],
+                    "estimate_median_v5": day["estimate_median_v5"],
+                    "factor_retained_water_v4": rounded(day["_factors"].get("retained_water"), 3),
+                    "factor_retained_water_v5": rounded(day["_factors_v5"].get("retained_water"), 3),
+                    "factor_temperature": rounded(day["_factors"].get("corrected_mean_temperature"), 3),
+                    "rain_mm_on_the_day": day["rain_mm"],
+                    "rain_mm_in_the_30_days_before": rounded(sum(value for value in before if value is not None), 1) if len(before) == 30 else "",
+                }
+            )
         grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for day in per_place_days[place["name"]]:
             grouped[day["date"][:7]].append(day)
-            day_rows.append({**{k: v for k, v in day.items() if k != "_factors"}, **{f"factor_{role}": rounded(day["_factors"].get(role), 3) for role in roles}})
+            day_rows.append({**{k: v for k, v in day.items() if not k.startswith("_")}, **{f"factor_{role}": rounded(day["_factors"].get(role), 3) for role in roles}})
         for label, days in grouped.items():
             medians = [day["estimate_median"] for day in days if day["estimate_median"] != ""]
+            medians_v5 = [day["estimate_median_v5"] for day in days if day["estimate_median_v5"] != ""]
             temperatures = [day["mean_temperature_c"] for day in days if day["mean_temperature_c"] != ""]
             minimums = [day["min_temperature_c"] for day in days if day["min_temperature_c"] != ""]
             rain = [day["rain_mm"] for day in days if day["rain_mm"] != ""]
@@ -736,6 +851,9 @@ def run(context: RunContext) -> None:
                     "mean_daily_median_estimate": rounded(sum(medians) / len(medians), 1) if medians else "",
                     "days_median_50_or_more": sum(1 for value in medians if value >= 50),
                     "days_median_30_or_more": sum(1 for value in medians if value >= 30),
+                    "mean_daily_median_estimate_v5": rounded(sum(medians_v5) / len(medians_v5), 1) if medians_v5 else "",
+                    "days_median_50_or_more_v5": sum(1 for value in medians_v5 if value >= 50),
+                    "days_median_30_or_more_v5": sum(1 for value in medians_v5 if value >= 30),
                     "mean_temperature_c": rounded(sum(temperatures) / len(temperatures), 1) if temperatures else "",
                     "frost_days": sum(1 for value in minimums if value < 0),
                     "rain_mm": rounded(sum(rain), 0) if rain else "",
@@ -750,13 +868,20 @@ def run(context: RunContext) -> None:
         "estimate_median",
         "estimate_p90",
         "estimate_max",
+        "estimate_median_v5",
+        "estimate_p90_v5",
+        "estimate_max_v5",
         *[f"factor_{role}" for role in roles],
         "mean_temperature_c",
         "min_temperature_c",
         "rain_mm",
         "soil_moisture",
     ]
+    day_columns.insert(day_columns.index("mean_temperature_c"), "factor_retained_water_v5")
     month_columns = list(month_rows[0])
+    find_path = REPORTS_DIR / "method_outside_tuscany_find_days.csv"
+    write_csv(rows=find_rows, columns=list(FIND_COLUMNS), path=find_path)
+    context.add_output(find_path)
     for name, rows_out, columns in (
         ("places", place_rows, PLACE_COLUMNS),
         ("days", day_rows, day_columns),
