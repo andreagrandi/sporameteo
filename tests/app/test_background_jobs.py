@@ -3,14 +3,17 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 import uuid
+from datetime import date
 from pathlib import Path
 from urllib.parse import urlencode
 
 import pytest
 from django.conf import settings
 from django.core.management import call_command
+from django.db import connection
 from django.http import JsonResponse
 from django.test import Client, override_settings
 from django.urls import path
@@ -24,10 +27,16 @@ from background_jobs.models import (
 from background_jobs.services import (
     create_representative_input,
     enqueue_representative_job,
+    logical_job_lock,
     recover_interrupted_jobs,
     retry_background_job,
 )
+from background_jobs import worker as worker_module
 from background_jobs.tasks import representative_job_task
+from background_jobs.worker import SporaMeteoWorker
+from estimate_updates.tasks import forecast_task
+from weather_on_demand.models import WeatherCleanupJob
+from weather_on_demand.services import enqueue_cleanup
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -492,6 +501,195 @@ def test_recovery_reconciles_completed_application_attempt_with_running_queue_ro
 
     task_result.refresh_from_db()
     assert task_result.status == "SUCCESSFUL"
+
+
+def _current_worker() -> SporaMeteoWorker:
+    return SporaMeteoWorker(
+        queue_names=["default"],
+        interval=0,
+        batch=True,
+        backend_name="default",
+        startup_delay=False,
+        max_tasks=None,
+        worker_id="test-current-worker",
+        excluded_queue_names=[],
+    )
+
+
+@pytest.mark.django_db(transaction=True)
+def test_running_worker_fails_attempt_left_by_a_stopped_worker(
+    representative_input: RepresentativeInput,
+) -> None:
+    representative_input.delay_seconds = 2.0
+    representative_input.save(update_fields=["delay_seconds"])
+    attempt = enqueue_representative_job(
+        input_id=representative_input.id,
+        logical_key=f"test:abandoned:{representative_input.id}",
+    )
+    current_worker = _current_worker()
+    child = subprocess.Popen(
+        _worker_command(worker_id="test-stopped-worker"),
+        cwd=PROJECT_ROOT,
+        env=_worker_environment(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        _wait_for_state(attempt_id=attempt.id, state="running")
+    finally:
+        if child.poll() is None:
+            child.kill()
+        child.communicate(timeout=10)
+
+    recovered = current_worker.recover_abandoned_tasks()
+
+    assert recovered == 1
+    attempt.refresh_from_db()
+    assert attempt.state == BackgroundJobAttempt.State.FAILED
+    assert attempt.failure_reason == "Worker stopped before the job completed."
+    assert DBTaskResult.objects.get(id=attempt.task_id).status == "FAILED"
+    retry = retry_background_job(attempt_id=attempt.id)
+    assert retry.state == BackgroundJobAttempt.State.WAITING
+    assert DBTaskResult.objects.get(id=retry.task_id).status == "READY"
+
+
+@pytest.mark.django_db(transaction=True)
+def test_running_worker_leaves_alone_an_attempt_whose_worker_is_working(
+    representative_input: RepresentativeInput,
+) -> None:
+    representative_input.delay_seconds = 0.7
+    representative_input.save(update_fields=["delay_seconds"])
+    attempt = enqueue_representative_job(
+        input_id=representative_input.id,
+        logical_key=f"test:live-abandoned:{representative_input.id}",
+    )
+    child = subprocess.Popen(
+        _worker_command(worker_id="test-live-worker"),
+        cwd=PROJECT_ROOT,
+        env=_worker_environment(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        _wait_for_state(attempt_id=attempt.id, state="running")
+        assert _current_worker().recover_abandoned_tasks() == 0
+        attempt.refresh_from_db()
+        assert attempt.state == BackgroundJobAttempt.State.RUNNING
+        assert DBTaskResult.objects.get(id=attempt.task_id).status == "RUNNING"
+    finally:
+        try:
+            child_output = child.communicate(timeout=20)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            child_output = child.communicate(timeout=10)
+    assert child.returncode == 0, child_output[1] or child_output[0]
+    attempt.refresh_from_db()
+    assert attempt.state == BackgroundJobAttempt.State.COMPLETED
+
+
+@pytest.mark.django_db(transaction=True)
+def test_running_worker_queues_again_a_cleanup_left_by_a_stopped_worker() -> None:
+    cleanup = enqueue_cleanup(cleanup_date=date(2026, 10, 22))
+    stopped_task_id = cleanup.task_id
+    assert stopped_task_id is not None
+    DBTaskResult.objects.get(id=stopped_task_id).claim(worker_id="test-stopped-worker")
+    WeatherCleanupJob.objects.filter(id=cleanup.id).update(
+        status=WeatherCleanupJob.Status.RUNNING,
+    )
+
+    recovered = _current_worker().recover_abandoned_tasks()
+
+    assert recovered == 1
+    cleanup.refresh_from_db()
+    assert cleanup.status == WeatherCleanupJob.Status.PENDING
+    assert cleanup.task_id is not None
+    assert cleanup.task_id != stopped_task_id
+    assert DBTaskResult.objects.get(id=stopped_task_id).status == "FAILED"
+    assert DBTaskResult.objects.get(id=cleanup.task_id).status == "READY"
+
+
+@pytest.mark.django_db(transaction=True)
+def test_running_worker_leaves_alone_a_cleanup_whose_worker_holds_the_lock() -> None:
+    cleanup = enqueue_cleanup(cleanup_date=date(2026, 10, 22))
+    live_task_id = cleanup.task_id
+    assert live_task_id is not None
+    DBTaskResult.objects.get(id=live_task_id).claim(worker_id="test-live-worker")
+    WeatherCleanupJob.objects.filter(id=cleanup.id).update(
+        status=WeatherCleanupJob.Status.RUNNING,
+    )
+    locked = threading.Event()
+    release = threading.Event()
+
+    def hold_lock() -> None:
+        try:
+            with logical_job_lock(logical_key=cleanup.logical_key, wait=True):
+                locked.set()
+                release.wait(timeout=10)
+        finally:
+            connection.close()
+
+    holder = threading.Thread(target=hold_lock)
+    holder.start()
+    try:
+        assert locked.wait(timeout=10)
+        assert _current_worker().recover_abandoned_tasks() == 0
+    finally:
+        release.set()
+        holder.join(timeout=10)
+
+    cleanup.refresh_from_db()
+    assert cleanup.status == WeatherCleanupJob.Status.RUNNING
+    assert cleanup.task_id == live_task_id
+    assert DBTaskResult.objects.get(id=live_task_id).status == "RUNNING"
+
+
+@pytest.mark.django_db(transaction=True)
+def test_running_worker_fails_other_queue_tasks_only_when_their_lock_is_free() -> None:
+    stopped = forecast_task.enqueue(region_code="09", assessment_date="2026-10-21")
+    live = forecast_task.enqueue(region_code="09", assessment_date="2026-10-22")
+    DBTaskResult.objects.get(id=stopped.id).claim(worker_id="test-stopped-worker")
+    DBTaskResult.objects.get(id=live.id).claim(worker_id="test-live-worker")
+    locked = threading.Event()
+    release = threading.Event()
+
+    def hold_lock() -> None:
+        try:
+            with logical_job_lock(logical_key="forecast:09:2026-10-22", wait=True):
+                locked.set()
+                release.wait(timeout=10)
+        finally:
+            connection.close()
+
+    holder = threading.Thread(target=hold_lock)
+    holder.start()
+    try:
+        assert locked.wait(timeout=10)
+        assert _current_worker().recover_abandoned_tasks() == 1
+    finally:
+        release.set()
+        holder.join(timeout=10)
+
+    assert DBTaskResult.objects.get(id=stopped.id).status == "FAILED"
+    assert DBTaskResult.objects.get(id=live.id).status == "RUNNING"
+
+
+@pytest.mark.django_db(transaction=True)
+def test_worker_loop_checks_for_abandoned_tasks_without_a_restart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(worker_module, "ABANDONED_TASK_CHECK_SECONDS", 0.0)
+    monkeypatch.setattr(
+        SporaMeteoWorker,
+        "recover_abandoned_tasks",
+        lambda self: calls.append(self.worker_id) or 0,
+    )
+
+    _current_worker().run()
+
+    assert calls == ["test-current-worker"]
 
 
 @pytest.mark.django_db(transaction=True)

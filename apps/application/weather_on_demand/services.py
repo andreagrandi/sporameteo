@@ -2520,20 +2520,7 @@ def recover_weather_fetches(
             job = WeatherCleanupJob.objects.select_for_update().get(id=candidate.id)
             if job.status != WeatherCleanupJob.Status.RUNNING or job.updated_at >= cleanup_cutoff:
                 continue
-            retry_at = max(current + RETRY_DELAY, job.retry_at or current + RETRY_DELAY)
-            job.status = WeatherCleanupJob.Status.PENDING
-            job.task_id = None
-            job.retry_at = retry_at
-            job.full_reason = "The worker stopped before weather cleanup completed."
-            job.save(
-                update_fields=[
-                    "status",
-                    "task_id",
-                    "retry_at",
-                    "full_reason",
-                    "updated_at",
-                ]
-            )
+            retry_at = _return_cleanup_to_pending(job=job, now=current)
         _schedule_cleanup(job=job, run_after=retry_at)
         recovered += 1
     for job in WeatherCleanupJob.objects.filter(
@@ -2562,6 +2549,52 @@ def recover_weather_fetches(
     recovered += _recover_scheduled_runs(now=current)
     _recover_estimate_callbacks(now=current)
     return recovered
+
+
+def recover_abandoned_weather_tasks(*, now: datetime | None = None) -> int:
+    """Queue again cleanup jobs and scheduled runs whose worker has stopped.
+
+    It decides by the task's locks, not by age, so it can run next to a live worker.
+    """
+    current = _clock_now(lambda: now) if now is not None else _clock_now()
+    recovered = 0
+    for candidate in WeatherCleanupJob.objects.filter(
+        status=WeatherCleanupJob.Status.RUNNING,
+        task_id__isnull=False,
+    ).order_by("updated_at"):
+        if _queue_task_is_active(
+            task_id=candidate.task_id,
+            logical_keys=weather_cleanup_task_lock_keys(job_id=candidate.id),
+        ):
+            continue
+        with transaction.atomic():
+            job = WeatherCleanupJob.objects.select_for_update().get(id=candidate.id)
+            if job.status != WeatherCleanupJob.Status.RUNNING or job.task_id != candidate.task_id:
+                continue
+            retry_at = _return_cleanup_to_pending(job=job, now=current)
+            _schedule_cleanup(job=job, run_after=retry_at)
+        recovered += 1
+    recovered += _recover_scheduled_runs(now=current)
+    return recovered
+
+
+def _return_cleanup_to_pending(*, job: WeatherCleanupJob, now: datetime) -> datetime:
+    """Mark a cleanup job left by a stopped worker as waiting to run again."""
+    retry_at = max(now + RETRY_DELAY, job.retry_at or now + RETRY_DELAY)
+    job.status = WeatherCleanupJob.Status.PENDING
+    job.task_id = None
+    job.retry_at = retry_at
+    job.full_reason = "The worker stopped before weather cleanup completed."
+    job.save(
+        update_fields=[
+            "status",
+            "task_id",
+            "retry_at",
+            "full_reason",
+            "updated_at",
+        ]
+    )
+    return retry_at
 
 
 def cleanup_weather(
