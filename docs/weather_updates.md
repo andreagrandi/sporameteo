@@ -132,6 +132,9 @@ The 04:00 check sends one email when the run is not published. The subject names
 - `weather_failed`: the weather run failed. The email holds the full reason of the run, such as the refusal message of the provider or the cell that lacks hours in the files.
 - `forecast_failed`: the forecast failed or could not be queued. The email holds the forecast error. With several regions it names the regions that are not published, with the failure reason of each.
 - `not_finished`: a step was still pending or running at 04:00.
+- `worker_down`: a task that is due has waited longer than 30 minutes, so no worker is taking tasks. The email says how long the oldest due task has waited and when a task last started, followed by the message of the step that stopped. A task with a later `run_after` time is not due and does not count. This reason replaces the others whenever the queue has stopped.
+
+The retry passes run the same queue check. When it finds a stopped worker they log a warning and still retry the step, so the step resumes once the worker is back.
 
 Run the check by hand for another date with `--assessment-date`:
 
