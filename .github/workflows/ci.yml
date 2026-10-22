@@ -21,7 +21,9 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Install translation tools
-        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y gettext
+        uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9 # v1.6.3
+        with:
+          packages: gettext
       - name: Set up Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
@@ -84,14 +86,10 @@ jobs:
       SPORAMETEO_DB_PORT: "5432"
     steps:
       - name: Install geographic libraries
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y \
-            gdal-bin \
-            libgdal-dev \
-            libgeos-dev \
-            libproj-dev \
-            gettext
+        # The packages come from the Actions cache, so a slow Ubuntu mirror only matters when this list changes.
+        uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9 # v1.6.3
+        with:
+          packages: gdal-bin libgdal-dev libgeos-dev libproj-dev gettext
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Set up uv
