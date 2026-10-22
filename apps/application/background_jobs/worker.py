@@ -12,10 +12,14 @@ from django_tasks_db.models import DBTaskResult
 from django_tasks_db.utils import exclusive_transaction, is_locked_database_exception
 
 from .models import BackgroundJobAttempt
-from .services import logical_job_locks
+from .services import logical_job_locks, recover_abandoned_tasks
 
 
 logger = logging.getLogger("django_tasks_db")
+
+# During a deploy the old worker can claim a task and then stop, after the new
+# worker has already run its startup recovery.
+ABANDONED_TASK_CHECK_SECONDS = 60.0
 
 
 REPRESENTATIVE_TASK_PATH = "background_jobs.tasks.representative_job_task"
@@ -90,6 +94,26 @@ class SporaMeteoWorker(DatabaseWorker):
         keys = self._logical_lock_keys_for_task(task_result)
         return keys[0] if keys else None
 
+    def recover_abandoned_tasks(self) -> int:
+        """Fail and queue again the tasks of workers that have stopped.
+
+        A failure here is logged and must not stop this worker.
+        """
+        try:
+            recovered = recover_abandoned_tasks(
+                lock_keys_for_task=self._logical_lock_keys_for_task,
+            )
+        except Exception:
+            logger.exception("Checking for abandoned tasks failed worker_id=%s", self.worker_id)
+            return 0
+        if recovered:
+            logger.warning(
+                "Recovered %d abandoned tasks worker_id=%s",
+                recovered,
+                self.worker_id,
+            )
+        return recovered
+
     def _claim_task(
         self,
         *,
@@ -139,8 +163,12 @@ class SporaMeteoWorker(DatabaseWorker):
         pause_after_claim = float(
             os.environ.get("SPORAMETEO_TEST_PAUSE_AFTER_TASK_CLAIM", "0")
         )
+        next_abandoned_check = time.monotonic() + ABANDONED_TASK_CHECK_SECONDS
         while self.running:
             close_old_connections()
+            if time.monotonic() >= next_abandoned_check:
+                self.recover_abandoned_tasks()
+                next_abandoned_check = time.monotonic() + ABANDONED_TASK_CHECK_SECONDS
             tasks = DBTaskResult.objects.ready().filter(backend_name=self.backend_name)
             if not self.process_all_queues:
                 tasks = tasks.filter(queue_name__in=self.queue_names)

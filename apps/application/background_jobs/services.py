@@ -1,6 +1,6 @@
 import hashlib
 import uuid
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from datetime import date
 
@@ -322,16 +322,90 @@ def _reconcile_terminal_attempt(
 def recover_interrupted_jobs() -> int:
     """Reconcile or fail SporaMeteo attempts left by a stopped worker."""
 
+    recovered = recover_interrupted_attempts(
+        states=[
+            BackgroundJobAttempt.State.WAITING,
+            BackgroundJobAttempt.State.RUNNING,
+            BackgroundJobAttempt.State.COMPLETED,
+            BackgroundJobAttempt.State.FAILED,
+        ]
+    )
+    if apps.is_installed("weather_on_demand"):
+        from weather_on_demand.services import recover_weather_fetches
+
+        recovered += recover_weather_fetches()
+    if apps.is_installed("estimate_updates"):
+        from estimate_updates.services import recover_estimate_tasks
+
+        recovered += recover_estimate_tasks()
+    return recovered
+
+
+def recover_abandoned_tasks(
+    *,
+    lock_keys_for_task: Callable[[DBTaskResult], tuple[str, ...]],
+) -> int:
+    """Fail tasks whose worker has stopped and queue their work again.
+
+    Safe while other workers run, because it only acts when the task's locks are free.
+    """
+
+    recovered = recover_interrupted_attempts(
+        states=[
+            BackgroundJobAttempt.State.WAITING,
+            BackgroundJobAttempt.State.RUNNING,
+        ]
+    )
+    if apps.is_installed("weather_on_demand"):
+        from weather_on_demand.services import recover_abandoned_weather_tasks
+
+        recovered += recover_abandoned_weather_tasks()
+    # Other task types only get their queue row failed here, their own rows
+    # recover when the worker next starts.
+    recovered += fail_abandoned_queue_tasks(lock_keys_for_task=lock_keys_for_task)
+    return recovered
+
+
+def fail_abandoned_queue_tasks(
+    *,
+    lock_keys_for_task: Callable[[DBTaskResult], tuple[str, ...]],
+) -> int:
+    """Fail running queue rows whose logical locks no worker holds.
+
+    A worker holds these locks for the whole task, and PostgreSQL drops them when it stops.
+    """
+
+    failed = 0
+    candidates = DBTaskResult.objects.filter(status="RUNNING").order_by("started_at")
+    for candidate in candidates:
+        logical_keys = lock_keys_for_task(candidate)
+        if not logical_keys:
+            continue
+        with logical_job_locks(logical_keys=logical_keys, wait=False) as acquired:
+            if not acquired:
+                continue
+            with transaction.atomic():
+                task_result = (
+                    DBTaskResult.objects.select_for_update()
+                    .filter(id=candidate.id, status="RUNNING")
+                    .first()
+                )
+                if task_result is None:
+                    continue
+                task_result.set_failed(BackgroundJobError(INTERRUPTED_FAILURE_REASON))
+                failed += 1
+    return failed
+
+
+def recover_interrupted_attempts(*, states: Iterable[str]) -> int:
+    """Reconcile or fail representative attempts in the given states.
+
+    It skips every attempt whose logical lock a live worker holds.
+    """
+
     recovered = 0
     attempts = (
-        BackgroundJobAttempt.objects.filter(
-            state__in=[
-                BackgroundJobAttempt.State.WAITING,
-                BackgroundJobAttempt.State.RUNNING,
-                BackgroundJobAttempt.State.COMPLETED,
-                BackgroundJobAttempt.State.FAILED,
-            ]
-        )
+        BackgroundJobAttempt.objects.filter(state__in=list(states))
         .select_related("job")
         .order_by("queued_at")
     )
@@ -425,13 +499,4 @@ def recover_interrupted_jobs() -> int:
                     attempt.failure_reason = attempt.failure_reason or reason
                     attempt.save(update_fields=["state", "ended_at", "failure_reason"])
                     recovered += 1
-
-    if apps.is_installed("weather_on_demand"):
-        from weather_on_demand.services import recover_weather_fetches
-
-        recovered += recover_weather_fetches()
-    if apps.is_installed("estimate_updates"):
-        from estimate_updates.services import recover_estimate_tasks
-
-        recovered += recover_estimate_tasks()
     return recovered
