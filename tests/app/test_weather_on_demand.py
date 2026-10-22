@@ -967,11 +967,18 @@ def test_cleanup_keeps_two_latest_and_referenced_snapshots_without_provider_call
     latest_fetch.previous_snapshot = referenced
     latest_fetch.save(update_fields=["previous_snapshot", "updated_at"])
     before_daily_count = WeatherDaily.objects.count()
-    cleanup = weather_services.cleanup_weather(
-        cleanup_date=base_day,
-        protected_snapshot_ids=(str(referenced.id),),
-    )
+    with CaptureQueriesContext(connection) as queries:
+        cleanup = weather_services.cleanup_weather(
+            cleanup_date=base_day,
+            protected_snapshot_ids=(str(referenced.id),),
+        )
 
+    # The cleanup must not load the JSON fields of every snapshot into memory.
+    assert not [
+        query["sql"]
+        for query in queries
+        if query["sql"].startswith("SELECT") and '"weather_summaries_weathersnapshot"."metadata"' in query["sql"]
+    ]
     assert cleanup["deleted_snapshot_count"] == 3
     assert WeatherSnapshot.objects.filter(id=referenced.id).exists()
     assert not WeatherSnapshot.objects.filter(id=unreferenced.id).exists()

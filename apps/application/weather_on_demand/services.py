@@ -2577,22 +2577,26 @@ def cleanup_weather(
             for value in (_CLEANUP_CALLBACK(cleanup_date=cleanup_date) or ())
         )
     with transaction.atomic():
+        # Read only the columns needed here, so memory does not grow with the JSON fields.
         snapshots = list(
             WeatherSnapshot.objects.order_by("cell_key", "-assessment_date", "-created_at")
+            .values_list("id", "cell_key", "assessment_date")
         )
         keep: set[str] = set(protected)
         kept_per_cell: dict[str, int] = defaultdict(int)
-        for snapshot in snapshots:
-            if kept_per_cell[snapshot.cell_key] < 2:
-                keep.add(str(snapshot.id))
-                kept_per_cell[snapshot.cell_key] += 1
-        latest_fetch_by_cell: dict[str, WeatherFetch] = {}
-        for fetch in WeatherFetch.objects.order_by("cell_key", "-assessment_date", "-updated_at"):
-            latest_fetch_by_cell.setdefault(fetch.cell_key, fetch)
+        for snapshot_id, cell_key, _assessment_date in snapshots:
+            if kept_per_cell[cell_key] < 2:
+                keep.add(str(snapshot_id))
+                kept_per_cell[cell_key] += 1
+        latest_fetch_by_cell: dict[str, tuple[uuid.UUID | None, uuid.UUID | None]] = {}
+        for cell_key, snapshot_id, previous_snapshot_id in WeatherFetch.objects.order_by(
+            "cell_key", "-assessment_date", "-updated_at"
+        ).values_list("cell_key", "snapshot_id", "previous_snapshot_id"):
+            latest_fetch_by_cell.setdefault(cell_key, (snapshot_id, previous_snapshot_id))
         keep.update(
             str(value)
-            for fetch in latest_fetch_by_cell.values()
-            for value in (fetch.snapshot_id, fetch.previous_snapshot_id)
+            for pair in latest_fetch_by_cell.values()
+            for value in pair
             if value is not None
         )
         active_fetches = WeatherFetch.objects.filter(
@@ -2642,12 +2646,13 @@ def cleanup_weather(
             previous_snapshot_id__in=keep
         ).update(previous_snapshot=None, updated_at=timezone.now())
         deletable = [
-            snapshot.id
-            for snapshot in snapshots
-            if str(snapshot.id) not in keep
-            and snapshot.assessment_date < cleanup_date
+            snapshot_id
+            for snapshot_id, _cell_key, assessment_date in snapshots
+            if str(snapshot_id) not in keep
+            and assessment_date < cleanup_date
         ]
-        snapshots_to_delete = WeatherSnapshot.objects.filter(id__in=deletable)
+        # The delete loads each row to follow cascades, so it reads only the id.
+        snapshots_to_delete = WeatherSnapshot.objects.filter(id__in=deletable).only("id")
         deleted_snapshots = snapshots_to_delete.count()
         snapshots_to_delete.delete()
         cutoff = cleanup_date - timedelta(days=HISTORY_DAYS)
