@@ -119,10 +119,18 @@ def _open(
         timeout=15_000,
     )
     first_date = current["info"]["target_dates"][0]
+    sets_before = page.evaluate("() => window.SporaMeteoMap.getDiagnostics().squareSetCount")
     page.locator(f".date-btn[data-date='{first_date}']").click(force=True)
+    # The click always loads the squares again. When the server rendered a real today that is
+    # outside TARGET_DATES, the map already shows this date, so wait for that load too.
     page.wait_for_function(
-        "(date) => window.SporaMeteoMap.getDiagnostics().displayedDate === date",
-        arg=first_date,
+        """
+        ([date, before]) => {
+          const diagnostics = window.SporaMeteoMap.getDiagnostics();
+          return diagnostics.displayedDate === date && diagnostics.squareSetCount > before;
+        }
+        """,
+        arg=[first_date, sets_before],
         timeout=15_000,
     )
     current["requests"] = requests
