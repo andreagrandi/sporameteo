@@ -1084,29 +1084,33 @@ def cleanup_estimate_updates(*, cleanup_date: date | None = None) -> tuple[str, 
         retained_snapshot_ids.update(
             str(value) for value in ForecastRunCell.objects.values_list("snapshot_id", flat=True)
         )
+        # Read only the columns needed here. Whole rows with tree_inputs filled more than 1 GB
+        # of worker memory once all 20 regions were updated every night.
         updates = list(
             EstimateUpdate.objects.select_for_update()
             .order_by("cell_key", "-assessment_date", "-calculated_at", "-id")
+            .values_list("id", "cell_key", "assessment_date", "snapshot_id")
         )
         kept_dates: dict[str, list[date]] = {}
         deletable: list[int] = []
-        for update in updates:
-            if update.id in run_update_ids:
-                retained_snapshot_ids.add(str(update.snapshot_id))
+        for update_id, cell_key, assessment_date, snapshot_id in updates:
+            if update_id in run_update_ids:
+                retained_snapshot_ids.add(str(snapshot_id))
                 continue
-            if update.assessment_date > target_date:
-                retained_snapshot_ids.add(str(update.snapshot_id))
+            if assessment_date > target_date:
+                retained_snapshot_ids.add(str(snapshot_id))
                 continue
-            dates = kept_dates.setdefault(update.cell_key, [])
-            if update.assessment_date in dates:
-                retained_snapshot_ids.add(str(update.snapshot_id))
+            dates = kept_dates.setdefault(cell_key, [])
+            if assessment_date in dates:
+                retained_snapshot_ids.add(str(snapshot_id))
             elif len(dates) < 2:
-                dates.append(update.assessment_date)
-                retained_snapshot_ids.add(str(update.snapshot_id))
+                dates.append(assessment_date)
+                retained_snapshot_ids.add(str(snapshot_id))
             else:
-                deletable.append(update.id)
+                deletable.append(update_id)
         if deletable:
-            EstimateUpdate.objects.filter(id__in=deletable).delete()
+            # The delete loads each row to follow cascades, so it reads only the id.
+            EstimateUpdate.objects.filter(id__in=deletable).only("id").delete()
         active_snapshot_ids = set(
             EstimateTask.objects.filter(
                 state__in=[EstimateTask.State.WAITING, EstimateTask.State.RUNNING],

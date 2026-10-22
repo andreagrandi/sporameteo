@@ -11,7 +11,8 @@ from uuid import uuid4
 import pytest
 from django.conf import settings
 from django.contrib.gis.geos import MultiPolygon, Polygon
-from django.db import close_old_connections
+from django.db import close_old_connections, connection
+from django.test.utils import CaptureQueriesContext
 
 from sporameteo.finds.grid import format_cell_id
 from sporameteo.forecast_method import ForecastResult, calculate_forecast
@@ -1387,8 +1388,11 @@ def test_cleanup_removes_terminal_old_tasks_and_protects_active_snapshot(
         state=EstimateTask.State.WAITING,
     )
 
-    retained = cleanup_estimate_updates(cleanup_date=newest_snapshot.assessment_date)
+    with CaptureQueriesContext(connection) as queries:
+        retained = cleanup_estimate_updates(cleanup_date=newest_snapshot.assessment_date)
 
+    # Loading tree_inputs of every update ran the worker out of memory in production.
+    assert not [query["sql"] for query in queries if "tree_inputs" in query["sql"]]
     assert not EstimateUpdate.objects.filter(id=oldest.update.id).exists()
     assert not EstimateTask.objects.filter(id=terminal.id).exists()
     assert EstimateTask.objects.filter(id=active.id).exists()
