@@ -5,11 +5,13 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timedelta
 
 from django.conf import settings
 from django.db import transaction
-from django_tasks_db.models import DBTaskResult
+from django.db.models import Max, Q
+from django.utils import timezone
+from django_tasks_db.models import DBTaskResult, get_date_max
 
 from weather_on_demand.models import ScheduledWeatherRun, WeatherFetchBatch
 from weather_on_demand.services import reopen_weather_fetch, start_scheduled_weather_run
@@ -25,8 +27,11 @@ NO_WEATHER_RUN = "no_weather_run"
 WEATHER_FAILED = "weather_failed"
 FORECAST_FAILED = "forecast_failed"
 NOT_FINISHED = "not_finished"
+WORKER_DOWN = "worker_down"
 
 _TRACEBACK_LINES = 8
+# A due task that waits longer than this means no worker is taking tasks.
+WORKER_WAIT_LIMIT = timedelta(minutes=30)
 
 
 @dataclass(frozen=True)
@@ -87,12 +92,50 @@ def _unpublished_regions(*, codes: tuple[str, ...], assessment_date: date) -> tu
     return tuple(code for code in codes if code not in published)
 
 
+def _waiting_since(*, task: DBTaskResult) -> datetime:
+    if task.run_after == get_date_max():
+        return task.enqueued_at
+    return max(task.enqueued_at, task.run_after)
+
+
+def _stopped_worker_message(*, now: datetime) -> str | None:
+    """Say how long the oldest due task has waited, or None when no due task waited past the limit."""
+    # A task with a later run_after is not due yet, so it does not count as waiting.
+    due = DBTaskResult.objects.filter(Q(run_after=get_date_max()) | Q(run_after__lte=now), status="READY").only(
+        "enqueued_at", "run_after"
+    )
+    if not due:
+        return None
+    oldest = min(_waiting_since(task=task) for task in due)
+    waited = now - oldest
+    if waited <= WORKER_WAIT_LIMIT:
+        return None
+    hours, rest = divmod(int(waited.total_seconds()) // 60, 60)
+    last_start = DBTaskResult.objects.aggregate(last=Max("started_at"))["last"]
+    started = f"A task last started at {last_start:%Y-%m-%d %H:%M} UTC." if last_start else "No task has ever started."
+    return (
+        f"No worker is taking tasks. The oldest due task has waited {hours} hours and {rest} minutes, "
+        f"since {oldest:%Y-%m-%d %H:%M} UTC. {started}"
+    )
+
+
 def check_nightly_update(*, assessment_date: date, region_code: str | None = None) -> NightlyCheckResult:
     """Read the stored run states and say whether every region has a published forecast run.
 
-    The reason code names the step that stopped when it is not. The default regions come
-    from SPORAMETEO_NIGHTLY_REGIONS, and the weather run is found by their run key.
+    The reason code names the step that stopped when it is not, or worker_down when a due task
+    waited past WORKER_WAIT_LIMIT. The default regions come from SPORAMETEO_NIGHTLY_REGIONS.
     """
+    result = _check_steps(assessment_date=assessment_date, region_code=region_code)
+    if result.is_published:
+        return result
+    stopped_worker = _stopped_worker_message(now=timezone.now())
+    if stopped_worker is None:
+        return result
+    return NightlyCheckResult(reason=WORKER_DOWN, message=f"{stopped_worker}\n{result.message}")
+
+
+def _check_steps(*, assessment_date: date, region_code: str | None) -> NightlyCheckResult:
+    """Say which step stopped for the night, without looking at the task queue."""
     region_code = nightly_run_key(value=region_code or settings.SPORAMETEO_NIGHTLY_REGIONS)
     codes = _region_codes(run_key=region_code)
     unpublished = _unpublished_regions(codes=codes, assessment_date=assessment_date)
@@ -183,10 +226,16 @@ def retry_nightly_update(
     It never sends an email.
     """
     region_code = nightly_run_key(value=region_code or settings.SPORAMETEO_NIGHTLY_REGIONS)
-    result = check_nightly_update(assessment_date=assessment_date, region_code=region_code)
+    result = _check_steps(assessment_date=assessment_date, region_code=region_code)
     if result.is_published:
         logger.info("Nightly retry for %s: the run is published, nothing to retry.", assessment_date)
         return result
+    stopped_worker = _stopped_worker_message(now=timezone.now())
+    if stopped_worker is not None:
+        # The retry below still runs, so the step resumes once a worker is back.
+        logger.warning(
+            "Nightly retry for %s: %s A retry cannot help until a worker runs.", assessment_date, stopped_worker
+        )
 
     def start() -> None:
         start_scheduled_weather_run(
@@ -226,4 +275,6 @@ def retry_nightly_update(
     else:
         action = "nothing, the forecast task is still running"
     logger.info("Nightly retry for %s (%s): %s.", assessment_date, result.reason, action)
+    if stopped_worker is not None:
+        return NightlyCheckResult(reason=WORKER_DOWN, message=f"{stopped_worker}\n{result.message}")
     return result

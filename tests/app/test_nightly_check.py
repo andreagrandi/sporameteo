@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from django.core import mail
 from django.core.management import call_command
+from django.utils import timezone
 from django_tasks_db.models import DBTaskResult
 
 import weather_on_demand.services as weather_services
@@ -16,6 +18,7 @@ from estimate_updates.nightly_check import (
     NOT_FINISHED,
     PUBLISHED,
     WEATHER_FAILED,
+    WORKER_DOWN,
     check_nightly_update,
     retry_nightly_update,
 )
@@ -243,3 +246,94 @@ def test_the_missing_weather_run_message_names_the_unpublished_regions(tuscany) 
 
     assert result.reason == NO_WEATHER_RUN
     assert "Regions not published: 12." in result.message
+
+
+# A worker that stopped taking tasks
+
+
+def _pending_weather_run(*, tuscany) -> ScheduledWeatherRun:
+    return ScheduledWeatherRun.objects.create(
+        region_code="09",
+        assessment_date=DAY,
+        forest_build_version=tuscany.forest.version,
+        status=ScheduledWeatherRun.Status.PENDING,
+        mode=ScheduledWeatherRun.Mode.INITIAL,
+        reason_code="pending",
+    )
+
+
+def _task_waiting_since(*, enqueued_at: datetime, run_after: datetime | None = None) -> DBTaskResult:
+    task = DBTaskResult.objects.get(id=queue_forecast(region_code="09", assessment_date=DAY))
+    fields = {"enqueued_at": enqueued_at}
+    if run_after is not None:
+        fields["run_after"] = run_after
+    DBTaskResult.objects.filter(id=task.id).update(**fields)
+    return task
+
+
+def test_a_due_task_waiting_past_the_limit_means_the_worker_is_down(tuscany) -> None:
+    _pending_weather_run(tuscany=tuscany)
+    _task_waiting_since(enqueued_at=timezone.now() - timedelta(hours=20, minutes=5))
+
+    result = check_nightly_update(assessment_date=DAY)
+
+    assert result.reason == WORKER_DOWN
+    assert "The weather run for" in result.message
+    assert "pending" in result.message
+
+
+def test_the_email_names_the_wait_and_the_last_task_start(tuscany, email_settings) -> None:
+    _pending_weather_run(tuscany=tuscany)
+    _task_waiting_since(enqueued_at=timezone.now() - timedelta(hours=20, minutes=5))
+    finished = _task_waiting_since(enqueued_at=datetime(2026, 10, 20, 9, 0, tzinfo=UTC))
+    DBTaskResult.objects.filter(id=finished.id).update(
+        status="SUCCESSFUL",
+        started_at=datetime(2026, 10, 20, 9, 12, tzinfo=UTC),
+    )
+
+    _run_check()
+
+    assert len(mail.outbox) == 1
+    assert WORKER_DOWN in mail.outbox[0].subject
+    assert "has waited 20 hours and 5 minutes" in mail.outbox[0].body
+    assert "A task last started at 2026-10-20 09:12 UTC." in mail.outbox[0].body
+
+
+def test_a_task_waiting_for_a_later_run_after_does_not_count(tuscany) -> None:
+    _pending_weather_run(tuscany=tuscany)
+    long_ago = timezone.now() - timedelta(hours=5)
+    _task_waiting_since(enqueued_at=long_ago, run_after=timezone.now() + timedelta(minutes=10))
+    _task_waiting_since(enqueued_at=long_ago, run_after=timezone.now() - timedelta(minutes=5))
+
+    assert check_nightly_update(assessment_date=DAY).reason == NOT_FINISHED
+
+
+def test_a_task_waiting_less_than_the_limit_does_not_count(tuscany) -> None:
+    _pending_weather_run(tuscany=tuscany)
+    _task_waiting_since(enqueued_at=timezone.now() - timedelta(minutes=25))
+
+    assert check_nightly_update(assessment_date=DAY).reason == NOT_FINISHED
+
+
+def test_a_published_night_ignores_a_stopped_worker(tuscany) -> None:
+    _publish_day(day=DAY)
+    _task_waiting_since(enqueued_at=timezone.now() - timedelta(hours=3))
+
+    assert check_nightly_update(assessment_date=DAY).reason == PUBLISHED
+
+
+def test_the_retry_logs_the_stopped_worker_and_still_resumes_the_run(tuscany, caplog, monkeypatch) -> None:
+    _pending_weather_run(tuscany=tuscany)
+    _task_waiting_since(enqueued_at=timezone.now() - timedelta(hours=3))
+    started = []
+    monkeypatch.setattr(
+        "estimate_updates.nightly_check.start_scheduled_weather_run",
+        lambda **kwargs: started.append(kwargs),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        result = retry_nightly_update(assessment_date=DAY)
+
+    assert result.reason == WORKER_DOWN
+    assert "No worker is taking tasks" in caplog.text
+    assert len(started) == 1
