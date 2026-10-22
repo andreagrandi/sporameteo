@@ -42,14 +42,12 @@ jobs:
       SPORAMETEO_DB_PORT: "5432"
       SPORAMETEO_E2E_SHARD: "${{ matrix.shard }}/3"
     steps:
-      - name: Refresh the Ubuntu package lists
-        # The cache action does not refresh them, and on a cache miss the runner's old lists can point at removed files.
-        run: sudo apt-get update
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Install system packages
-        # The packages come from the Actions cache, so a slow Ubuntu mirror only matters when this list changes.
         # After gdal-bin and gettext come the Chromium libraries from the Ubuntu 24.04 list in Playwright 1.63,
         # which playwright install --with-deps would otherwise download on every run.
-        uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9 # v1.6.3
+        uses: ./.github/actions/install-ubuntu-packages
         with:
           packages: >-
             gdal-bin gettext
@@ -58,8 +56,6 @@ jobs:
             libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 libcairo2 libcups2t64 libdbus-1-3
             libdrm2 libgbm1 libglib2.0-0t64 libnspr4 libnss3 libpango-1.0-0 libx11-6 libxcb1 libxcomposite1
             libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Set up Node for map checks
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:

@@ -1,0 +1,43 @@
+name: Install Ubuntu packages
+description: Install Ubuntu packages from .deb files kept in the Actions cache, and use the Ubuntu mirror only when the cache is empty.
+
+inputs:
+  packages:
+    description: Space separated package names.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Name the cache
+      id: key
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+      # The key holds only the package names, so a newer Ubuntu index does not empty the cache.
+      run: echo "hash=$(echo $PACKAGES | tr ' ' '\n' | sort -u | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+    - name: Restore the package files
+      id: cache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      with:
+        path: ~/ubuntu-packages
+        key: ubuntu-packages-${{ env.ImageOS }}-${{ steps.key.outputs.hash }}
+    - name: Download from the Ubuntu mirror
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+      # A failed download fails the job, and actions/cache saves nothing for a failed job.
+      run: |
+        sudo apt-get clean
+        sudo apt-get update
+        sudo apt-get install --download-only --no-install-recommends -y $PACKAGES
+        mkdir -p ~/ubuntu-packages
+        find /var/cache/apt/archives -maxdepth 1 -name '*.deb' -exec cp {} ~/ubuntu-packages/ \;
+    - name: Install the package files
+      shell: bash
+      # dpkg reads the local files only, so this step never contacts the mirror.
+      run: |
+        if compgen -G "$HOME/ubuntu-packages/*.deb" > /dev/null; then
+          sudo dpkg -i ~/ubuntu-packages/*.deb
+        fi

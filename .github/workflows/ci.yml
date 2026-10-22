@@ -20,11 +20,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - name: Refresh the Ubuntu package lists
-        # The cache action does not refresh them, and on a cache miss the runner's old lists can point at removed files.
-        run: sudo apt-get update
       - name: Install translation tools
-        uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9 # v1.6.3
+        uses: ./.github/actions/install-ubuntu-packages
         with:
           packages: gettext
       - name: Set up Node
@@ -88,16 +85,12 @@ jobs:
       SPORAMETEO_DB_HOST: 127.0.0.1
       SPORAMETEO_DB_PORT: "5432"
     steps:
-      - name: Refresh the Ubuntu package lists
-        # The cache action does not refresh them, and on a cache miss the runner's old lists can point at removed files.
-        run: sudo apt-get update
-      - name: Install geographic libraries
-        # The packages come from the Actions cache, so a slow Ubuntu mirror only matters when this list changes.
-        uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9 # v1.6.3
-        with:
-          packages: gdal-bin libgdal-dev libgeos-dev libproj-dev gettext
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Install geographic libraries
+        uses: ./.github/actions/install-ubuntu-packages
+        with:
+          packages: gdal-bin libgdal-dev libgeos-dev libproj-dev gettext
       - name: Set up uv
         uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9
         with:
