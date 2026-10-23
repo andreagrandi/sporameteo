@@ -4,6 +4,7 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -18,6 +19,7 @@ from django.test.utils import CaptureQueriesContext
 from django_tasks_db.models import DBTaskResult
 
 import weather_on_demand.services as weather_services
+from background_jobs.services import logical_job_locks
 from weather_requests.eligibility import weather_cell
 from weather_requests.models import WeatherRequest, WeatherRequestAttempt
 from weather_requests.provider import request_spec_from_request
@@ -1228,3 +1230,163 @@ def test_recovery_returns_abandoned_batch_to_pending_and_uses_provider_retry_tim
     assert batch.status == WeatherFetchBatch.Status.PENDING
     assert batch.retry_at == retry_time
     assert batch.task_id is not None
+
+
+@contextmanager
+def _locks_held_by_another_session(*, keys: tuple[str, ...]) -> Iterator[None]:
+    locked = Event()
+    release = Event()
+
+    def hold_locks() -> None:
+        try:
+            with logical_job_locks(logical_keys=keys, wait=True):
+                locked.set()
+                release.wait(timeout=10)
+        finally:
+            connection.close()
+
+    holder = Thread(target=hold_locks)
+    holder.start()
+    try:
+        assert locked.wait(timeout=10)
+        yield
+    finally:
+        release.set()
+        holder.join(timeout=10)
+
+
+def _running_batch_started_long_ago(*, day: date) -> WeatherFetchBatch:
+    weather_services.request_weather(
+        cells=(_cell(),),
+        visitor_id="lock-recovery",
+        assessment_date=day,
+        clock=lambda: _clock(day=day),
+        transport=None,
+        wait_seconds=0,
+    )
+    batch = WeatherFetch.objects.get(assessment_date=day).batch
+    assert batch is not None
+    WeatherFetchBatch.objects.filter(id=batch.id).update(
+        status=WeatherFetchBatch.Status.RUNNING,
+        started_at=_clock(day=day) - timedelta(minutes=3),
+    )
+    batch.refresh_from_db()
+    return batch
+
+
+@pytest.mark.django_db(transaction=True)
+def test_startup_recovery_leaves_a_running_batch_whose_cell_lock_is_held() -> None:
+    day = date(2026, 10, 11)
+    batch = _running_batch_started_long_ago(day=day)
+    fetch = WeatherFetch.objects.get(assessment_date=day)
+    cell_key = f"weather-fetch:{fetch.cell_key}:{day.isoformat()}"
+
+    with _locks_held_by_another_session(keys=(cell_key,)):
+        recovered = weather_services.recover_weather_fetches(now=_clock(day=day))
+
+    batch.refresh_from_db()
+    assert recovered == 0
+    assert batch.status == WeatherFetchBatch.Status.RUNNING
+
+
+@pytest.mark.django_db(transaction=True)
+def test_startup_recovery_leaves_a_running_cleanup_whose_lock_is_held() -> None:
+    cleanup = weather_services.enqueue_cleanup(cleanup_date=date(2026, 10, 22))
+    WeatherCleanupJob.objects.filter(id=cleanup.id).update(
+        status=WeatherCleanupJob.Status.RUNNING,
+        task_id=None,
+        updated_at=datetime(2026, 10, 1, tzinfo=UTC),
+    )
+
+    with _locks_held_by_another_session(keys=(cleanup.logical_key,)):
+        weather_services.recover_weather_fetches(now=_clock(day=date(2026, 10, 22)))
+
+    cleanup.refresh_from_db()
+    assert cleanup.status == WeatherCleanupJob.Status.RUNNING
+
+
+@pytest.mark.django_db(transaction=True)
+def test_startup_recovery_queues_again_a_running_cleanup_when_its_lock_is_free() -> None:
+    cleanup = weather_services.enqueue_cleanup(cleanup_date=date(2026, 10, 22))
+    WeatherCleanupJob.objects.filter(id=cleanup.id).update(
+        status=WeatherCleanupJob.Status.RUNNING,
+        task_id=None,
+        updated_at=datetime(2026, 10, 1, tzinfo=UTC),
+    )
+
+    recovered = weather_services.recover_weather_fetches(now=_clock(day=date(2026, 10, 22)))
+
+    cleanup.refresh_from_db()
+    assert recovered == 1
+    assert cleanup.status == WeatherCleanupJob.Status.PENDING
+    assert cleanup.task_id is not None
+
+
+def _fetch_with_callback_running_long_ago(*, day: date, calls: list[dict[str, object]]) -> WeatherFetch:
+    configure_estimate_callback(lambda **kwargs: calls.append(kwargs))
+    _request_weather(
+        cells=(_cell(),),
+        day=day,
+        transport=_FakeOpenMeteo(),
+        forest_build_version="forest-v1",
+    )
+    deadline = real_monotonic() + 15
+    while (
+        WeatherFetch.objects.get(assessment_date=day).estimate_callback_status != "completed"
+        and real_monotonic() < deadline
+    ):
+        sleep(0.05)
+    fetch = WeatherFetch.objects.get(assessment_date=day)
+    assert fetch.estimate_callback_status == "completed"
+    WeatherFetch.objects.filter(id=fetch.id).update(
+        estimate_callback_status="running",
+        estimate_callback_started_at=_clock(day=day) - timedelta(hours=1),
+    )
+    calls.clear()
+    return fetch
+
+
+@pytest.mark.django_db(transaction=True)
+def test_startup_recovery_leaves_a_running_estimate_callback_whose_lock_is_held() -> None:
+    day = date(2026, 10, 11)
+    calls: list[dict[str, object]] = []
+    fetch = _fetch_with_callback_running_long_ago(day=day, calls=calls)
+
+    with _locks_held_by_another_session(
+        keys=weather_services.estimate_callback_lock_keys(fetch_id=fetch.id)
+    ):
+        weather_services.recover_weather_fetches(now=_clock(day=day))
+
+    fetch.refresh_from_db()
+    assert fetch.estimate_callback_status == "running"
+    assert calls == []
+
+
+@pytest.mark.django_db(transaction=True)
+def test_startup_recovery_runs_again_a_running_estimate_callback_when_its_lock_is_free() -> None:
+    day = date(2026, 10, 11)
+    calls: list[dict[str, object]] = []
+    fetch = _fetch_with_callback_running_long_ago(day=day, calls=calls)
+
+    weather_services.recover_weather_fetches(now=_clock(day=day))
+
+    fetch.refresh_from_db()
+    assert fetch.estimate_callback_status == "completed"
+    assert len(calls) == 1
+
+
+@pytest.mark.django_db(transaction=True)
+def test_startup_recovery_returns_a_running_batch_with_a_running_queue_row_when_locks_are_free() -> None:
+    day = date(2026, 10, 11)
+    batch = _running_batch_started_long_ago(day=day)
+    old_task_id = batch.task_id
+    assert old_task_id is not None
+    DBTaskResult.objects.get(id=old_task_id).claim(worker_id="test-stopped-worker")
+
+    recovered = weather_services.recover_weather_fetches(now=_clock(day=day))
+
+    batch.refresh_from_db()
+    assert recovered == 1
+    assert batch.status == WeatherFetchBatch.Status.PENDING
+    assert batch.task_id != old_task_id
+    assert DBTaskResult.objects.get(id=old_task_id).status == "FAILED"

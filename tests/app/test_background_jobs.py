@@ -6,7 +6,7 @@ import sys
 import threading
 import time
 import uuid
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -35,8 +35,9 @@ from background_jobs import worker as worker_module
 from background_jobs.tasks import representative_job_task
 from background_jobs.worker import SporaMeteoWorker
 from estimate_updates.tasks import forecast_task
-from weather_on_demand.models import WeatherCleanupJob
-from weather_on_demand.services import enqueue_cleanup
+from weather_on_demand.models import WeatherCleanupJob, WeatherFetch, WeatherFetchBatch
+from weather_on_demand.services import enqueue_cleanup, request_weather
+from weather_requests.eligibility import weather_cell
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -790,3 +791,62 @@ def test_request_path_queues_without_running_representative_work(
     attempt = BackgroundJobAttempt.objects.get(id=body["attempt_id"])
     assert not RepresentativeResult.objects.filter(job_id=attempt.job_id).exists()
     assert DBTaskResult.objects.get(id=attempt.task_id).status == "READY"
+
+
+def _running_weather_batch_started_long_ago() -> WeatherFetchBatch:
+    day = date(2026, 10, 11)
+    request_weather(
+        cells=(weather_cell(latitude=44.05, longitude=10.85),),
+        visitor_id="abandoned-check",
+        assessment_date=day,
+        clock=lambda: datetime(2026, 10, 11, 12, tzinfo=UTC),
+        transport=None,
+        wait_seconds=0,
+    )
+    batch = WeatherFetch.objects.get(assessment_date=day).batch
+    assert batch is not None
+    WeatherFetchBatch.objects.filter(id=batch.id).update(
+        status=WeatherFetchBatch.Status.RUNNING,
+        started_at=datetime(2026, 10, 11, 11, tzinfo=UTC),
+    )
+    batch.refresh_from_db()
+    return batch
+
+
+@pytest.mark.django_db(transaction=True)
+def test_running_worker_returns_a_running_batch_to_pending_when_its_locks_are_free() -> None:
+    batch = _running_weather_batch_started_long_ago()
+
+    assert _current_worker().recover_abandoned_tasks() == 1
+
+    batch.refresh_from_db()
+    assert batch.status == WeatherFetchBatch.Status.PENDING
+
+
+@pytest.mark.django_db(transaction=True)
+def test_running_worker_leaves_alone_a_running_batch_whose_cell_lock_is_held() -> None:
+    batch = _running_weather_batch_started_long_ago()
+    fetch = WeatherFetch.objects.get(batch=batch)
+    cell_lock = f"weather-fetch:{fetch.cell_key}:{fetch.assessment_date.isoformat()}"
+    locked = threading.Event()
+    release = threading.Event()
+
+    def hold_lock() -> None:
+        try:
+            with logical_job_lock(logical_key=cell_lock, wait=True):
+                locked.set()
+                release.wait(timeout=10)
+        finally:
+            connection.close()
+
+    holder = threading.Thread(target=hold_lock)
+    holder.start()
+    try:
+        assert locked.wait(timeout=10)
+        assert _current_worker().recover_abandoned_tasks() == 0
+    finally:
+        release.set()
+        holder.join(timeout=10)
+
+    batch.refresh_from_db()
+    assert batch.status == WeatherFetchBatch.Status.RUNNING
