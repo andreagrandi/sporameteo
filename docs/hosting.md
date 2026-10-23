@@ -461,6 +461,68 @@ git remote add dokku dokku@vps.sporameteo.com:sporameteo
 git push dokku master
 ```
 
+## Image size
+
+On 23 October 2026 the image built on the laptop from commit `4399ea2` with
+the `Dockerfile` of that commit took 2.39 GB, or 2,390,274,670 bytes. The
+laptop builds for ARM, like the VPS. The VPS reported 3.2 GB for
+`dokku/sporameteo`. The `deploy` user cannot read the Docker images on the VPS
+without the `sudo` password, so the reason for the gap is still unknown.
+
+`docker history` gives the size of each step of the final stage:
+
+| Step | Size |
+|---|---|
+| Debian trixie and Python 3.14.8 from `python:3.14.8-slim-trixie` | 145 MB |
+| `apt-get install` of `gettext`, `libgdal-dev`, `libgeos-dev` and `libproj-dev` | 736 MB |
+| Copy of the `uv` binary | 37.5 MB |
+| Copy of `pyproject.toml`, `uv.lock` and `README.md` | 0.3 MB |
+| `uv sync --frozen --no-dev --no-install-project` | 1.42 GB |
+| Copy of `src` and `apps` | 1.9 MB |
+| `uv sync --frozen --no-dev` | 1.1 MB |
+| Copy of the built CSS | 0.1 MB |
+| Copy of the MapLibre files | 14.1 MB |
+| `compilemessages` and `collectstatic` | 34.8 MB |
+
+The `apt-get` step adds 259 packages to the base image. Their declared
+installed size is 786 MB. The 87 packages whose name ends in `-dev` account for
+453 MB of it. The largest are `libboost1.83-dev` with 161 MB, `libicu-dev` with
+51 MB, `liblapack-dev` with 23 MB and `libstdc++-14-dev` with 23 MB. The header
+files under `/usr/include` take 207 MB. Nothing in the image compiles C code,
+because `uv sync` installs only prebuilt wheels.
+
+The `uv sync` step is 1.42 GB because it keeps two copies of every package.
+`/app/.venv` takes 710 MB. The download cache in `/root/.cache/uv` takes
+711 MB, and the app never reads it.
+
+The 10 largest Python packages in `/app/.venv`, counted from the files each
+package lists as installed:
+
+| Package | Version | Size |
+|---|---|---|
+| pyarrow | 26.0.0 | 154 MB |
+| rasterio | 1.5.2 | 124 MB |
+| scipy | 1.18.1 | 122 MB |
+| numpy | 2.5.3 | 54 MB |
+| scikit-learn | 1.9.1 | 40 MB |
+| pyproj | 3.8.0 | 37 MB |
+| matplotlib | 3.11.2 | 27 MB |
+| psycopg-binary | 3.3.6 | 25 MB |
+| fonttools | 4.66.1 | 24 MB |
+| Django | 6.1.2 | 24 MB |
+
+`rasterio` carries its own copy of GDAL in `rasterio.libs`, 66 MB of its
+124 MB. `pyproj` also carries its own PROJ.
+
+A test image swapped the three `-dev` packages for the runtime libraries
+`libgdal36`, `libgeos-c1t64` and `libproj25`, which are the packages the
+`-dev` ones depend on. Its `apt-get` step took 211 MB instead of 736 MB, and
+the whole image took 1.87 GB instead of 2.39 GB. The expected saving is
+525 MB. `/usr/include` was empty. Inside that image, Django loaded GDAL 3.10.3
+and GEOS 3.13.1 and moved a point from WGS 84 to the European grid,
+EPSG:3035, with PROJ. `compilemessages` and `collectstatic` ran during the
+build.
+
 ## Checks
 
 ```sh
