@@ -260,6 +260,41 @@ def test_cached_prefix_stays_selectable_when_fresh_request_fails(page: Page, bas
     assert page.evaluate("window.__sporameteoPendingDestination.latitude") == 43.97
 
 
+def test_highlighted_preview_result_stays_selected_when_fresh_results_arrive(
+    page: Page, base_url: str
+) -> None:
+    _open_fixture(page, base_url)
+    result = {"name": "Pistoia", "context": "Pistoia, Toscana", "latitude": 44.1305, "longitude": 10.6405}
+    held_routes: list[Route] = []
+
+    def search_response(route: Route) -> None:
+        query = parse_qs(urlparse(route.request.url).query)
+        if "cached_only" in query:
+            route.fulfill(json={"results": [result], "complete": False})
+        else:
+            held_routes.append(route)
+
+    page.route("**/api/v1/places/search**", search_response)
+    search = page.locator("[data-place-search]")
+    search.fill("Pistoia")
+    option = page.locator("[data-search-results] [role=option]")
+    expect(option).to_have_count(1)
+    search.press("ArrowDown")
+    expect(option).to_have_attribute("aria-selected", "true")
+    for _ in range(100):
+        if held_routes:
+            break
+        page.wait_for_timeout(50)
+    assert len(held_routes) == 1
+    held_routes[0].fulfill(
+        json={"results": [{**result, "context": "Pistoia, Toscana, Italia"}], "cached": False}
+    )
+    expect(option).to_contain_text("Pistoia, Toscana, Italia")
+    expect(option).to_have_attribute("aria-selected", "true")
+    search.press("Enter")
+    assert page.evaluate("() => window.__sporameteoPendingDestination?.source") == "search"
+
+
 def test_search_combobox_supports_context_and_keyboard_selection(page: Page, base_url: str) -> None:
     _open_fixture(page, base_url)
     page.route(
