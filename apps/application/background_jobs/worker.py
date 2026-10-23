@@ -27,6 +27,7 @@ WEATHER_FETCH_TASK_PATH = "weather_on_demand.tasks.weather_fetch_task"
 WEATHER_CLEANUP_TASK_PATH = "weather_on_demand.tasks.weather_cleanup_task"
 SCHEDULED_WEATHER_TASK_PATH = "weather_on_demand.tasks.scheduled_weather_run_task"
 FORECAST_TASK_PATH = "estimate_updates.tasks.forecast_task"
+ESTIMATE_TASK_PATH = "estimate_updates.tasks.estimate_update_task"
 
 
 class SporaMeteoWorker(DatabaseWorker):
@@ -87,6 +88,17 @@ class SporaMeteoWorker(DatabaseWorker):
             if region_code is None or assessment_date is None:
                 return ()
             return (f"forecast:{region_code}:{assessment_date}",)
+        if task_result.task_path == ESTIMATE_TASK_PATH:
+            job_id = kwargs.get("job_id")
+            if job_id is None:
+                return ()
+            try:
+                parsed_job_id = uuid.UUID(str(job_id))
+            except ValueError:
+                return ()
+            from estimate_updates.services import estimate_task_lock_keys
+
+            return estimate_task_lock_keys(task_id=parsed_job_id)
         return ()
 
     def _logical_key_for_task(self, task_result: DBTaskResult) -> str | None:

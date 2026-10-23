@@ -16,6 +16,7 @@ from typing import Any
 
 from django.conf import settings
 from django.db import IntegrityError, connection, transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from sporameteo.forecast_method import (
@@ -62,7 +63,6 @@ from .host_trees import calculation_version, saved_host_trees, tree_inputs_for_a
 
 METHOD_VERSION = CURRENT_METHOD.version
 DEFAULT_BATCH_SIZE = 1_000
-STALE_ESTIMATE_TASK_AGE = timedelta(minutes=30)
 TERRAIN_BUILD_SETTING = "SPORAMETEO_TERRAIN_BUILD_VERSION"
 FOREST_BUILD_SETTING = "SPORAMETEO_FOREST_BUILD_VERSION"
 REPLACED_TASK_REASON = "Replaced: the method or tree source changed after this task was queued."
@@ -987,55 +987,107 @@ def retry_estimate_task(*, task_id: uuid.UUID | str) -> EstimateTask:
     return task_row
 
 
+def estimate_task_lock_keys(*, task_id: uuid.UUID | str) -> tuple[str, ...]:
+    """Return the advisory key a worker holds while it runs one estimate task."""
+    return (f"estimate-task:{task_id}",)
+
+
 def recover_estimate_tasks() -> int:
-    """Requeue estimate tasks stranded by a failed callback or worker restart."""
+    """Requeue estimate tasks stranded by a failed callback or worker restart.
+
+    It skips a running task whose lock a live worker holds.
+    """
     recovered = 0
     candidates = EstimateTask.objects.filter(
         state__in=[EstimateTask.State.WAITING, EstimateTask.State.RUNNING],
     ).values_list("id", flat=True)
     for task_id in candidates.iterator(chunk_size=DEFAULT_BATCH_SIZE):
-        with transaction.atomic():
-            task_row = EstimateTask.objects.select_for_update().get(id=task_id)
-            if task_row.state == EstimateTask.State.COMPLETED:
-                continue
-            if task_row.queue_token is not None:
-                task_row.queue_token = None
-                task_row.save(update_fields=["queue_token", "updated_at"])
-            backend_status = (
-                _task_backend_status(task_id=task_row.task_id)
-                if task_row.task_id is not None
-                else None
-            )
-            running_recently = (
-                task_row.started_at is not None
-                and task_row.started_at > timezone.now() - STALE_ESTIMATE_TASK_AGE
-            )
-            if backend_status == "RUNNING" and running_recently:
-                continue
-            if _is_replaced(task_row=task_row):
-                _close_replaced_task(task_row=task_row)
-                continue
-            if backend_status == "READY":
-                if task_row.state == EstimateTask.State.RUNNING:
-                    task_row.state = EstimateTask.State.WAITING
-                    task_row.save(update_fields=["state", "updated_at"])
-                    recovered += 1
-                continue
+        recovered += _recover_estimate_task(task_id=task_id)
+    return recovered + recover_estimate_handoffs()
+
+
+def recover_abandoned_estimate_tasks() -> int:
+    """Requeue running estimate tasks whose worker has stopped.
+
+    It decides by the task's lock, not by age, so it can run next to a live worker.
+    """
+    from django_tasks_db.models import DBTaskResult
+
+    running_queue_ids = DBTaskResult.objects.filter(status="RUNNING").values("id")
+    candidates = EstimateTask.objects.filter(
+        Q(state=EstimateTask.State.RUNNING)
+        | Q(state=EstimateTask.State.WAITING, task_id__in=running_queue_ids),
+    ).values_list("id", flat=True)
+    recovered = 0
+    for task_id in candidates.iterator(chunk_size=DEFAULT_BATCH_SIZE):
+        recovered += _recover_estimate_task(task_id=task_id)
+    return recovered
+
+
+def _recover_estimate_task(*, task_id: uuid.UUID) -> int:
+    """Recover one estimate task, holding its lock if a live worker could own it."""
+    from background_jobs.services import logical_job_locks
+
+    current = EstimateTask.objects.filter(id=task_id).values_list("state", "task_id").first()
+    if current is None:
+        return 0
+    state, queue_task_id = current
+    backend_status = (
+        _task_backend_status(task_id=queue_task_id) if queue_task_id is not None else None
+    )
+    if state != EstimateTask.State.RUNNING and backend_status != "RUNNING":
+        return _requeue_estimate_task(task_id=task_id, locked=False)
+    with logical_job_locks(
+        logical_keys=estimate_task_lock_keys(task_id=task_id),
+        wait=False,
+    ) as acquired:
+        if not acquired:
+            return 0
+        return _requeue_estimate_task(task_id=task_id, locked=True)
+
+
+def _requeue_estimate_task(*, task_id: uuid.UUID, locked: bool) -> int:
+    """Reset one stranded estimate task and queue it again.
+
+    Without the task lock it leaves alone a task that a worker claimed after the first read."""
+    with transaction.atomic():
+        task_row = EstimateTask.objects.select_for_update().get(id=task_id)
+        if task_row.state == EstimateTask.State.COMPLETED:
+            return 0
+        backend_status = (
+            _task_backend_status(task_id=task_row.task_id)
+            if task_row.task_id is not None
+            else None
+        )
+        if not locked and (
+            task_row.state == EstimateTask.State.RUNNING or backend_status == "RUNNING"
+        ):
+            return 0
+        if task_row.queue_token is not None:
+            task_row.queue_token = None
+            task_row.save(update_fields=["queue_token", "updated_at"])
+        if _is_replaced(task_row=task_row):
+            _close_replaced_task(task_row=task_row)
+            return 0
+        if backend_status == "READY":
             if task_row.state == EstimateTask.State.RUNNING:
                 task_row.state = EstimateTask.State.WAITING
-                task_row.failure_reason = (
-                    f"{task_row.failure_reason}\nWorker interrupted before estimate completion."
-                    if task_row.failure_reason
-                    else "Worker interrupted before estimate completion."
-                )
-            task_row.task_id = None
-            task_row.queue_token = None
-            task_row.save(
-                update_fields=["state", "task_id", "queue_token", "failure_reason", "updated_at"]
+                task_row.save(update_fields=["state", "updated_at"])
+                return 1
+            return 0
+        if task_row.state == EstimateTask.State.RUNNING:
+            task_row.state = EstimateTask.State.WAITING
+            task_row.failure_reason = (
+                f"{task_row.failure_reason}\nWorker interrupted before estimate completion."
+                if task_row.failure_reason
+                else "Worker interrupted before estimate completion."
             )
-            if _schedule_estimate_task(task_row=task_row):
-                recovered += 1
-    return recovered + recover_estimate_handoffs()
+        task_row.task_id = None
+        task_row.queue_token = None
+        task_row.save(
+            update_fields=["state", "task_id", "queue_token", "failure_reason", "updated_at"]
+        )
+        return 1 if _schedule_estimate_task(task_row=task_row) else 0
 
 
 def recover_estimate_handoffs() -> int:

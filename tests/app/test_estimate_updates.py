@@ -1,21 +1,26 @@
 """Focused checks for compact estimate updates and exact read states."""
 
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from collections.abc import Iterator
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 import math
-from threading import Lock
+from threading import Event, Lock, Thread
 from types import SimpleNamespace
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from django.conf import settings
 from django.contrib.gis.geos import MultiPolygon, Polygon
 from django.db import close_old_connections, connection
 from django.test.utils import CaptureQueriesContext
+from django_tasks_db.models import DBTaskResult
 
 from sporameteo.finds.grid import format_cell_id
 from sporameteo.forecast_method import ForecastResult, calculate_forecast
+from background_jobs.services import logical_job_locks
+from background_jobs.worker import SporaMeteoWorker
 from national_forest.models import ForestBuild, ForestCell, ForestChunk
 from national_grid.models import GridBuild, GridBuildCell, GridCell, GridChunk, GridRegion
 from national_terrain.models import TerrainBuild, TerrainCell, TerrainChunk
@@ -45,6 +50,7 @@ from estimate_updates.services import (
     facts_for_estimate,
     publish_estimate_update,
     read_estimate,
+    estimate_task_lock_keys,
     recover_estimate_tasks,
     recover_estimate_handoffs,
     retry_estimate_task,
@@ -1577,3 +1583,152 @@ def test_weather_callback_creates_one_durable_estimate_task_for_same_input(
     assert first.id == second.id
     assert EstimateTask.objects.count() == 1
     assert queued == [first.id]
+
+
+@contextmanager
+def _lock_held_by_another_session(*, task_id: object) -> Iterator[None]:
+    locked = Event()
+    release = Event()
+
+    def hold_lock() -> None:
+        try:
+            with logical_job_locks(
+                logical_keys=estimate_task_lock_keys(task_id=task_id),
+                wait=True,
+            ):
+                locked.set()
+                release.wait(timeout=10)
+        finally:
+            connection.close()
+
+    holder = Thread(target=hold_lock)
+    holder.start()
+    try:
+        assert locked.wait(timeout=10)
+        yield
+    finally:
+        release.set()
+        holder.join(timeout=10)
+
+
+def _estimate_task_started_long_ago(
+    *, fixture: dict[str, object], state: str,
+) -> EstimateTask:
+    snapshot = fixture["snapshot"]
+    return EstimateTask.objects.create(
+        snapshot=snapshot,
+        cell_key=snapshot.cell_key,
+        assessment_date=snapshot.assessment_date,
+        forest_build_version=fixture["forest"].version,
+        terrain_build_version="test-terrain-version",
+        input_fingerprint="9" * 64,
+        state=state,
+        started_at=datetime.now(UTC) - timedelta(hours=2),
+    )
+
+
+def _estimate_worker() -> SporaMeteoWorker:
+    return SporaMeteoWorker(
+        queue_names=["default"],
+        interval=0,
+        batch=True,
+        backend_name="default",
+        startup_delay=False,
+        max_tasks=None,
+        worker_id="test-current-worker",
+        excluded_queue_names=[],
+    )
+
+
+@pytest.mark.django_db(transaction=True)
+def test_worker_lock_keys_for_an_estimate_task_use_the_estimate_task_id() -> None:
+    task_id = uuid4()
+    queued = DBTaskResult.objects.create(
+        task_path="estimate_updates.tasks.estimate_update_task",
+        args_kwargs={"args": [], "kwargs": {"job_id": str(task_id)}},
+        queue_name="default",
+        backend_name="default",
+        run_after=datetime.now(UTC),
+        return_value=None,
+        exception_class_path="",
+        traceback="",
+    )
+
+    keys = _estimate_worker()._logical_lock_keys_for_task(queued)
+
+    assert keys == (f"estimate-task:{task_id}",)
+
+
+@pytest.mark.django_db(transaction=True)
+def test_startup_recovery_leaves_a_running_estimate_task_whose_lock_is_held(
+    complete_estimate_fixture: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from estimate_updates import services
+
+    monkeypatch.setattr(services, "_queue_estimate_task", lambda *, task_id: None)
+    task = _estimate_task_started_long_ago(
+        fixture=complete_estimate_fixture, state=EstimateTask.State.RUNNING
+    )
+
+    with _lock_held_by_another_session(task_id=task.id):
+        assert recover_estimate_tasks() == 0
+
+    task.refresh_from_db()
+    assert task.state == EstimateTask.State.RUNNING
+
+
+@pytest.mark.django_db(transaction=True)
+def test_abandoned_check_returns_a_running_estimate_task_to_waiting_only_when_its_lock_is_free(
+    complete_estimate_fixture: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from estimate_updates import services
+
+    monkeypatch.setattr(services, "_queue_estimate_task", lambda *, task_id: None)
+    task = _estimate_task_started_long_ago(
+        fixture=complete_estimate_fixture, state=EstimateTask.State.RUNNING
+    )
+    worker = _estimate_worker()
+
+    with _lock_held_by_another_session(task_id=task.id):
+        assert worker.recover_abandoned_tasks() == 0
+    task.refresh_from_db()
+    assert task.state == EstimateTask.State.RUNNING
+
+    assert worker.recover_abandoned_tasks() == 1
+    task.refresh_from_db()
+    assert task.state == EstimateTask.State.WAITING
+    assert "Worker interrupted" in task.failure_reason
+
+
+@pytest.mark.django_db(transaction=True)
+def test_abandoned_check_queues_again_a_waiting_estimate_task_with_a_running_queue_row(
+    complete_estimate_fixture: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from estimate_updates import services
+    from estimate_updates.tasks import estimate_update_task
+
+    queued: list[object] = []
+    monkeypatch.setattr(services, "_queue_estimate_task", lambda *, task_id: queued.append(task_id))
+    task = _estimate_task_started_long_ago(
+        fixture=complete_estimate_fixture, state=EstimateTask.State.WAITING
+    )
+    queue_id = UUID(str(estimate_update_task.enqueue(job_id=str(task.id)).id))
+    DBTaskResult.objects.get(id=queue_id).claim(worker_id="test-stopped-worker")
+    EstimateTask.objects.filter(id=task.id).update(task_id=queue_id)
+    worker = _estimate_worker()
+
+    with _lock_held_by_another_session(task_id=task.id):
+        assert worker.recover_abandoned_tasks() == 0
+    task.refresh_from_db()
+    assert task.task_id == queue_id
+    assert queued == []
+
+    # One for the estimate task and one for the stopped queue row.
+    assert worker.recover_abandoned_tasks() == 2
+    task.refresh_from_db()
+    assert task.task_id is None
+    assert queued == [task.id]
+    assert DBTaskResult.objects.get(id=queue_id).status == "FAILED"

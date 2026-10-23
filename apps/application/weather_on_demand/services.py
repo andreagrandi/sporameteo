@@ -237,6 +237,24 @@ def _notify_snapshot_ready(
 
 
 def _dispatch_estimate_callback(*, fetch_id: uuid.UUID) -> None:
+    """Run the optional estimate callback once, under its own lock.
+
+    It returns at once if another session is already running the callback.
+    """
+    if _ESTIMATE_CALLBACK is None:
+        return
+    from background_jobs.services import logical_job_locks
+
+    with logical_job_locks(
+        logical_keys=estimate_callback_lock_keys(fetch_id=fetch_id),
+        wait=False,
+    ) as acquired:
+        if not acquired:
+            return
+        _run_estimate_callback(fetch_id=fetch_id)
+
+
+def _run_estimate_callback(*, fetch_id: uuid.UUID) -> None:
     """Run the optional estimate callback and retain failures for retry."""
     callback = _ESTIMATE_CALLBACK
     if callback is None:
@@ -338,6 +356,11 @@ def weather_task_lock_keys(*, batch_id: uuid.UUID | str) -> tuple[str, ...]:
             for fetch in sorted(fetches.values(), key=lambda item: item.cell_key)
         ]
     )
+
+
+def estimate_callback_lock_keys(*, fetch_id: uuid.UUID | str) -> tuple[str, ...]:
+    """Return the advisory key held while one fetch's estimate callback runs."""
+    return (f"estimate-callback:{fetch_id}",)
 
 
 def weather_cleanup_task_lock_keys(*, job_id: uuid.UUID | str) -> tuple[str, ...]:
@@ -925,11 +948,16 @@ def _queue_task_is_active(
     with logical_job_locks(logical_keys=keys, wait=False) as acquired:
         if not acquired:
             return True
-        with transaction.atomic():
-            current = DBTaskResult.objects.select_for_update().filter(id=task_id).first()
-            if current is not None and current.status == "RUNNING":
-                current.set_failed(RuntimeError("The worker stopped before the task completed."))
+        _fail_running_queue_task(task_id=task_id)
     return False
+
+
+def _fail_running_queue_task(*, task_id: uuid.UUID) -> None:
+    """Mark a queue row left running by a stopped worker as failed."""
+    with transaction.atomic():
+        current = DBTaskResult.objects.select_for_update().filter(id=task_id).first()
+        if current is not None and current.status == "RUNNING":
+            current.set_failed(RuntimeError("The worker stopped before the task completed."))
 
 
 def _start_injected_batch(
@@ -2394,19 +2422,24 @@ def _recover_estimate_callbacks(*, now: datetime) -> None:
     ).filter(
         estimate_callback_status__in=["pending", "running"],
     )
+    from background_jobs.services import logical_job_locks
+
     for fetch in fetches:
-        if (
-            fetch.estimate_callback_status == "running"
-            and fetch.estimate_callback_started_at is not None
-            and fetch.estimate_callback_started_at + RETRY_DELAY > now
-        ):
-            continue
         if fetch.estimate_callback_status == "running":
-            WeatherFetch.objects.filter(id=fetch.id).update(
-                estimate_callback_status="pending",
-                estimate_callback_started_at=None,
-                updated_at=now,
-            )
+            with logical_job_locks(
+                logical_keys=estimate_callback_lock_keys(fetch_id=fetch.id),
+                wait=False,
+            ) as acquired:
+                if not acquired:
+                    continue
+                WeatherFetch.objects.filter(
+                    id=fetch.id,
+                    estimate_callback_status="running",
+                ).update(
+                    estimate_callback_status="pending",
+                    estimate_callback_started_at=None,
+                    updated_at=now,
+                )
         if (
             fetch.estimate_callback_retry_at is not None
             and fetch.estimate_callback_retry_at > now
@@ -2415,114 +2448,15 @@ def _recover_estimate_callbacks(*, now: datetime) -> None:
         _dispatch_estimate_callback(fetch_id=fetch.id)
 
 
-def recover_weather_fetches(
-    *,
-    now: datetime | None = None,
-    stale_after: timedelta = timedelta(minutes=2),
-) -> int:
-    """Return abandoned running batches to pending queue work."""
+def recover_weather_fetches(*, now: datetime | None = None) -> int:
+    """Return batches and cleanup jobs left by a stopped worker to pending queue work.
+
+    It decides by the task's locks, not by age, so a live worker keeps its work.
+    """
     current = _clock_now(lambda: now) if now is not None else _clock_now()
-    cutoff = current - stale_after
-    recovered = 0
-    candidates = WeatherFetchBatch.objects.filter(
-        status=WeatherFetchBatch.Status.RUNNING,
-        started_at__lt=cutoff,
-    ).select_related("request").order_by("started_at")
-    for candidate in candidates:
-        with transaction.atomic():
-            batch = (
-                WeatherFetchBatch.objects.select_for_update()
-                .select_related("request")
-                .get(id=candidate.id)
-            )
-            if batch.status != WeatherFetchBatch.Status.RUNNING or (
-                batch.started_at is not None and batch.started_at >= cutoff
-            ):
-                continue
-            retry_at = max(
-                current + RETRY_DELAY,
-                batch.retry_at or current + RETRY_DELAY,
-                batch.request.retry_at or current + RETRY_DELAY,
-            )
-            batch.status = WeatherFetchBatch.Status.PENDING
-            batch.task_id = None
-            batch.retry_at = retry_at
-            batch.reason_code = "worker_interrupted"
-            batch.full_reason = "The worker stopped before weather storage completed."
-            batch.save(
-                update_fields=[
-                    "status",
-                    "task_id",
-                    "retry_at",
-                    "reason_code",
-                    "full_reason",
-                    "updated_at",
-                ]
-            )
-            batch.fetches.filter(status=WeatherFetch.Status.RUNNING).update(
-                status=WeatherFetch.Status.PENDING,
-                retry_at=retry_at,
-                reason_code="worker_interrupted",
-                full_reason=batch.full_reason,
-                updated_at=current,
-            )
-            WeatherFetch.objects.filter(
-                id__in=batch.parts.values_list("fetch_id", flat=True),
-                status=WeatherFetch.Status.RUNNING,
-            ).update(
-                status=WeatherFetch.Status.PENDING,
-                retry_at=retry_at,
-                reason_code="worker_interrupted",
-                full_reason=batch.full_reason,
-                updated_at=current,
-            )
-            batch.parts.filter(status=WeatherFetchPart.Status.RUNNING).update(
-                status=WeatherFetchPart.Status.PENDING,
-                retry_at=retry_at,
-                reason_code="worker_interrupted",
-                full_reason=batch.full_reason,
-                updated_at=current,
-            )
-        _schedule_batch(batch=batch, run_after=retry_at)
-        recovered += 1
-    for batch in WeatherFetchBatch.objects.filter(
-        status=WeatherFetchBatch.Status.PENDING,
-    ).order_by("first_requested_at"):
-        if batch.task_id is not None and _queue_task_is_active(
-            task_id=batch.task_id,
-            logical_keys=weather_task_lock_keys(batch_id=batch.id),
-        ):
-            continue
-        if batch.task_id is not None:
-            with transaction.atomic():
-                current_batch = WeatherFetchBatch.objects.select_for_update().get(id=batch.id)
-                if current_batch.task_id == batch.task_id:
-                    current_batch.task_id = None
-                    current_batch.reason_code = "worker_claim_lost"
-                    current_batch.full_reason = (
-                        "The worker stopped after claiming the weather task."
-                    )
-                    current_batch.save(
-                        update_fields=["task_id", "reason_code", "full_reason", "updated_at"]
-                    )
-                    batch = current_batch
-                else:
-                    batch = current_batch
-        if batch.retry_at is not None and batch.retry_at > current:
-            continue
-        _schedule_batch(batch=batch, run_after=max(current, batch.retry_at or current))
-    cleanup_cutoff = current - stale_after
-    for candidate in WeatherCleanupJob.objects.filter(
-        status=WeatherCleanupJob.Status.RUNNING,
-        updated_at__lt=cleanup_cutoff,
-    ).order_by("updated_at"):
-        with transaction.atomic():
-            job = WeatherCleanupJob.objects.select_for_update().get(id=candidate.id)
-            if job.status != WeatherCleanupJob.Status.RUNNING or job.updated_at >= cleanup_cutoff:
-                continue
-            retry_at = _return_cleanup_to_pending(job=job, now=current)
-        _schedule_cleanup(job=job, run_after=retry_at)
-        recovered += 1
+    recovered = _recover_running_batches(now=current)
+    _recover_pending_batches(now=current)
+    recovered += _recover_running_cleanup_jobs(now=current)
     for job in WeatherCleanupJob.objects.filter(
         status=WeatherCleanupJob.Status.PENDING,
     ).order_by("cleanup_date"):
@@ -2552,29 +2486,159 @@ def recover_weather_fetches(
 
 
 def recover_abandoned_weather_tasks(*, now: datetime | None = None) -> int:
-    """Queue again cleanup jobs and scheduled runs whose worker has stopped.
+    """Queue again batches, cleanup jobs and scheduled runs whose worker has stopped.
 
     It decides by the task's locks, not by age, so it can run next to a live worker.
     """
     current = _clock_now(lambda: now) if now is not None else _clock_now()
+    recovered = _recover_running_batches(now=current)
+    _recover_pending_batches(now=current)
+    recovered += _recover_running_cleanup_jobs(now=current)
+    recovered += _recover_scheduled_runs(now=current)
+    return recovered
+
+
+def _recover_running_batches(*, now: datetime) -> int:
+    """Return running batches whose locks no worker holds to pending and queue them."""
+    from background_jobs.services import logical_job_locks
+
+    recovered = 0
+    for candidate in WeatherFetchBatch.objects.filter(
+        status=WeatherFetchBatch.Status.RUNNING,
+    ).order_by("started_at"):
+        logical_keys = weather_task_lock_keys(batch_id=candidate.id)
+        with logical_job_locks(logical_keys=logical_keys, wait=False) as acquired:
+            if not acquired:
+                continue
+            if candidate.task_id is not None:
+                _fail_running_queue_task(task_id=candidate.task_id)
+            batch = _return_batch_to_pending(batch_id=candidate.id, now=now)
+        if batch is None:
+            continue
+        _schedule_batch(batch=batch, run_after=batch.retry_at)
+        recovered += 1
+    return recovered
+
+
+def _return_batch_to_pending(
+    *,
+    batch_id: uuid.UUID,
+    now: datetime,
+) -> WeatherFetchBatch | None:
+    """Mark a running batch left by a stopped worker as waiting to run again."""
+    with transaction.atomic():
+        batch = (
+            WeatherFetchBatch.objects.select_for_update()
+            .select_related("request")
+            .filter(id=batch_id)
+            .first()
+        )
+        if batch is None or batch.status != WeatherFetchBatch.Status.RUNNING:
+            return None
+        retry_at = max(
+            now + RETRY_DELAY,
+            batch.retry_at or now + RETRY_DELAY,
+            batch.request.retry_at or now + RETRY_DELAY,
+        )
+        batch.status = WeatherFetchBatch.Status.PENDING
+        batch.task_id = None
+        batch.retry_at = retry_at
+        batch.reason_code = "worker_interrupted"
+        batch.full_reason = "The worker stopped before weather storage completed."
+        batch.save(
+            update_fields=[
+                "status",
+                "task_id",
+                "retry_at",
+                "reason_code",
+                "full_reason",
+                "updated_at",
+            ]
+        )
+        batch.fetches.filter(status=WeatherFetch.Status.RUNNING).update(
+            status=WeatherFetch.Status.PENDING,
+            retry_at=retry_at,
+            reason_code="worker_interrupted",
+            full_reason=batch.full_reason,
+            updated_at=now,
+        )
+        WeatherFetch.objects.filter(
+            id__in=batch.parts.values_list("fetch_id", flat=True),
+            status=WeatherFetch.Status.RUNNING,
+        ).update(
+            status=WeatherFetch.Status.PENDING,
+            retry_at=retry_at,
+            reason_code="worker_interrupted",
+            full_reason=batch.full_reason,
+            updated_at=now,
+        )
+        batch.parts.filter(status=WeatherFetchPart.Status.RUNNING).update(
+            status=WeatherFetchPart.Status.PENDING,
+            retry_at=retry_at,
+            reason_code="worker_interrupted",
+            full_reason=batch.full_reason,
+            updated_at=now,
+        )
+    return batch
+
+
+def _recover_pending_batches(*, now: datetime) -> None:
+    """Queue pending batches that have no live queue task."""
+    for batch in WeatherFetchBatch.objects.filter(
+        status=WeatherFetchBatch.Status.PENDING,
+    ).order_by("first_requested_at"):
+        if batch.task_id is not None and _queue_task_is_active(
+            task_id=batch.task_id,
+            logical_keys=weather_task_lock_keys(batch_id=batch.id),
+        ):
+            continue
+        if batch.task_id is not None:
+            with transaction.atomic():
+                current_batch = WeatherFetchBatch.objects.select_for_update().get(id=batch.id)
+                if current_batch.task_id == batch.task_id:
+                    current_batch.task_id = None
+                    current_batch.reason_code = "worker_claim_lost"
+                    current_batch.full_reason = (
+                        "The worker stopped after claiming the weather task."
+                    )
+                    current_batch.save(
+                        update_fields=["task_id", "reason_code", "full_reason", "updated_at"]
+                    )
+                    batch = current_batch
+                else:
+                    batch = current_batch
+        if batch.retry_at is not None and batch.retry_at > now:
+            continue
+        _schedule_batch(batch=batch, run_after=max(now, batch.retry_at or now))
+
+
+def _recover_running_cleanup_jobs(*, now: datetime) -> int:
+    """Return running cleanup jobs whose lock no worker holds to pending and queue them."""
+    from background_jobs.services import logical_job_locks
+
     recovered = 0
     for candidate in WeatherCleanupJob.objects.filter(
         status=WeatherCleanupJob.Status.RUNNING,
-        task_id__isnull=False,
     ).order_by("updated_at"):
-        if _queue_task_is_active(
-            task_id=candidate.task_id,
-            logical_keys=weather_cleanup_task_lock_keys(job_id=candidate.id),
-        ):
-            continue
-        with transaction.atomic():
-            job = WeatherCleanupJob.objects.select_for_update().get(id=candidate.id)
-            if job.status != WeatherCleanupJob.Status.RUNNING or job.task_id != candidate.task_id:
+        logical_keys = weather_cleanup_task_lock_keys(job_id=candidate.id)
+        with logical_job_locks(logical_keys=logical_keys, wait=False) as acquired:
+            if not acquired:
                 continue
-            retry_at = _return_cleanup_to_pending(job=job, now=current)
-            _schedule_cleanup(job=job, run_after=retry_at)
+            if candidate.task_id is not None and _queue_task_is_active(
+                task_id=candidate.task_id,
+                logical_keys=logical_keys,
+            ):
+                continue
+            with transaction.atomic():
+                job = WeatherCleanupJob.objects.select_for_update().get(id=candidate.id)
+                if (
+                    job.status != WeatherCleanupJob.Status.RUNNING
+                    or job.task_id != candidate.task_id
+                ):
+                    continue
+                retry_at = _return_cleanup_to_pending(job=job, now=now)
+                _schedule_cleanup(job=job, run_after=retry_at)
         recovered += 1
-    recovered += _recover_scheduled_runs(now=current)
     return recovered
 
 

@@ -360,6 +360,10 @@ def recover_abandoned_tasks(
         from weather_on_demand.services import recover_abandoned_weather_tasks
 
         recovered += recover_abandoned_weather_tasks()
+    if apps.is_installed("estimate_updates"):
+        from estimate_updates.services import recover_abandoned_estimate_tasks
+
+        recovered += recover_abandoned_estimate_tasks()
     # Other task types only get their queue row failed here, their own rows
     # recover when the worker next starts.
     recovered += fail_abandoned_queue_tasks(lock_keys_for_task=lock_keys_for_task)

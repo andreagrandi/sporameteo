@@ -91,6 +91,8 @@ The weather callback records a waiting task before queue dispatch. If queue
 dispatch fails, the task keeps its failure reason and a later callback or
 worker startup recovery reserves it again. Startup recovery also returns
 interrupted running tasks to waiting without making a weather request.
+It does this only when no worker holds the task lock, and the 60 second check
+does the same.
 
 Each task records the method and tree source it was queued with. A deploy that
 changes either leaves old tasks in the queue. The worker and startup recovery
