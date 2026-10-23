@@ -523,6 +523,13 @@ and GEOS 3.13.1 and moved a point from WGS 84 to the European grid,
 EPSG:3035, with PROJ. `compilemessages` and `collectstatic` ran during the
 build.
 
+Issue #192 made both changes in the `Dockerfile`. It installs the three
+runtime libraries, and both `uv sync` lines run with `--no-cache`. Built on the
+laptop on 23 October 2026 from commit `b995b4a` plus this change, the image
+took 1.16 GB, or 1,156,446,307 bytes, instead of 2.39 GB. The `apt-get`
+step took 211 MB, and the first `uv sync` step took 710 MB. The image has no
+`/root/.cache` folder and no package whose name ends in `-dev`.
+
 ## Checks
 
 ```sh
