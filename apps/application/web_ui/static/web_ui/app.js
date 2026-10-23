@@ -388,7 +388,14 @@
       option.scrollIntoView({ block: "nearest" });
     }
 
+    function sameResult(first, second) {
+      return first.name === second.name
+        && Number(first.latitude) === Number(second.latitude)
+        && Number(first.longitude) === Number(second.longitude);
+    }
+
     function renderResults(nextItems) {
+      const previousActive = items[activeIndex];
       activeIndex = -1;
       input.removeAttribute("aria-activedescendant");
       items = Array.isArray(nextItems) ? nextItems : [];
@@ -432,6 +439,11 @@
       resultsBox.hidden = false;
       input.setAttribute("aria-expanded", "true");
       announce(`${items.length} ${labels.search_results}`);
+      // Fresh results replace the cached preview. Keep the place the user already highlighted.
+      if (previousActive) {
+        const index = items.findIndex((item) => sameResult(item, previousActive));
+        if (index >= 0) setActive(index);
+      }
     }
 
     function renderMessage(message) {
