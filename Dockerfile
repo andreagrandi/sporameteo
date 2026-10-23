@@ -27,9 +27,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gettext \
-    libgdal-dev \
-    libgeos-dev \
-    libproj-dev \
+    libgdal36 \
+    libgeos-c1t64 \
+    libproj25 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=ghcr.io/astral-sh/uv:0.13.0 /uv /usr/local/bin/uv
@@ -37,11 +37,11 @@ COPY --from=ghcr.io/astral-sh/uv:0.13.0 /uv /usr/local/bin/uv
 WORKDIR /app
 
 COPY pyproject.toml uv.lock README.md ./
-RUN uv sync --frozen --no-dev --no-install-project
+RUN uv sync --frozen --no-dev --no-install-project --no-cache
 
 COPY src ./src
 COPY apps ./apps
-RUN uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev --no-cache
 
 COPY --from=css-builder /app/apps/application/web_ui/static/web_ui/ ./apps/application/web_ui/static/web_ui/
 COPY --from=map-library /app/tools/map_checks/node_modules/maplibre-gl/dist ./tools/map_checks/node_modules/maplibre-gl/dist
