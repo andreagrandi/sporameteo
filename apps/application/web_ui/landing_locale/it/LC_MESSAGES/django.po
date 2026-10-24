@@ -168,8 +168,14 @@ msgstr "{mean}°C, minima {minimum}°C"
 msgid "Updated {date} at {time}"
 msgstr "Aggiornato il {date} alle {time}"
 
-msgid "Open Abetone on the map"
-msgstr "Apri Abetone nella mappa"
+msgid "Open {place} on the map"
+msgstr "Apri {place} nella mappa"
+
+msgid "Best areas today"
+msgstr "Le zone migliori di oggi"
+
+msgid "Best areas, {day}"
+msgstr "Le zone migliori, {day}"
 
 msgid "An experimental tool"
 msgstr "Uno strumento sperimentale"
@@ -240,8 +246,8 @@ msgstr "Pioggia dei giorni scorsi"
 msgid "We count the rain that fell in the last 7, 14 and 21 completed days. These are past totals, not future rain."
 msgstr "Contiamo la pioggia caduta negli ultimi 7, 14 e 21 giorni completati. Sono totali del passato, non pioggia futura."
 
-msgid "At Abetone they are {seven}, {fourteen} and {twenty_one} mm."
-msgstr "Ad Abetone sono {seven}, {fourteen} e {twenty_one} mm."
+msgid "For {place} they are {seven}, {fourteen} and {twenty_one} mm."
+msgstr "Per {place} sono {seven}, {fourteen} e {twenty_one} mm."
 
 msgid "History of 7, 14 and 21 days"
 msgstr "Storico di 7, 14 e 21 giorni"
