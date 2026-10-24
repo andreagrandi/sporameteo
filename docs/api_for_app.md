@@ -125,27 +125,28 @@ The map page renders 8 dates on the server with `web_ui.views._dates`, from
 `/api/v1/info`. A phone app only uses `/info`, so this does not need a shared
 function.
 
-## Proposed follow-up tickets
+## Follow-up tickets
 
 Under #203, website:
 
-1. Size S. Add a plain function in `area_api` that returns the detail body of
-   one square for one date and update. Make `area_detail` and
-   `landing_top_areas._read_detail` call it, so the landing page stops
-   building a fake request and parsing JSON.
-2. Size M. Move the best areas ranking from `web_ui/landing_top_areas.py` to
-   `map_api`, give `_offset` a public name, and keep the landing page showing
-   the same areas and scores. It depends on ticket 1.
+- #207, size S. Add a plain function in `area_api` that returns the detail
+  body of one square for one date and update. Make `area_detail` and
+  `landing_top_areas._read_detail` call it, so the landing page stops
+  building a fake request and parsing JSON.
+- #208, size M. Move the best areas ranking from
+  `web_ui/landing_top_areas.py` to `map_api`, give `_offset` a public name,
+  and keep the landing page showing the same areas and scores. It depends on
+  #207.
 
 Under #204, endpoints:
 
-3. Size M. Add `GET /api/v1/top-areas` with the fields above. It calls the
-   function from ticket 2. It adds the endpoint to `docs/api.md`, starts
-   `docs/api_changelog.md` and adds it to the schema test. It depends on
-   ticket 2.
-4. Size S. Add response schemas to `/places/search`, `/places/resolve` and
-   `/estimate-overview`, so the published API description lists their output
-   fields for app code. The JSON they return stays the same.
+- #209, size M. Add `GET /api/v1/top-areas` with the fields above. It calls
+  the function from #208. It adds the endpoint to `docs/api.md`, starts
+  `docs/api_changelog.md` and adds it to the schema test. It depends on
+  #208.
+- #210, size S. Add response schemas to `/places/search`, `/places/resolve`
+  and `/estimate-overview`, so the published API description lists their
+  output fields for app code. The JSON they return stays the same.
 
 ## Not covered
 
