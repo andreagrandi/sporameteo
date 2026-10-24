@@ -4,6 +4,7 @@ The Django application serves anonymous reads under `/api/v1`. The generated
 schema is at `/api/v1/openapi.json` and the interactive reference is at
 `/api/v1/docs`. Run the application with the completed national grid, terrain
 and forest builds, the weather migrations and the estimate migrations.
+`docs/api_changelog.md` records every change to the API.
 
 These routes return stored product data. The percentage is experimental and
 unvalidated. It does not measure a visitor's chance of finding a mushroom.
