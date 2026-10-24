@@ -1,11 +1,16 @@
 """Django Ninja endpoints for the local application."""
 
-from typing import Literal
+import logging
+from typing import Any, Literal
 
-from django.http import HttpRequest
+import sentry_sdk
+from django.conf import settings
+from django.http import Http404, HttpRequest, HttpResponse
 from ninja import NinjaAPI, Schema, Status
+from ninja.errors import HttpError, ValidationError
 
 from area_api.router import router as area_router
+from config.api_schemas import ApiErrorSchema
 from config.health import database_is_available
 from map_api.api import router as map_router
 from place_search.api import router as place_search_router
@@ -18,7 +23,77 @@ class HealthResponse(Schema):
     database: Literal["available", "unavailable"]
 
 
+logger = logging.getLogger(__name__)
+
 api = NinjaAPI(title="SporaMeteo API", version="1")
+
+
+def _error_response(
+    *,
+    request: HttpRequest,
+    status: int,
+    code: str,
+    message: str,
+    message_key: str,
+    details: dict[str, Any] | None = None,
+) -> HttpResponse:
+    """Return one error in the shared shape that every API endpoint uses.
+    A phone app then reads a single error format."""
+    error = ApiErrorSchema(code=code, message=message, message_key=message_key, details=details)
+    return api.create_response(request, error.model_dump(), status=status)
+
+
+@api.exception_handler(ValidationError)
+def handle_validation_error(request: HttpRequest, exc: ValidationError) -> HttpResponse:
+    """Return 422 with the field errors when a query or body value is invalid."""
+    return _error_response(
+        request=request,
+        status=422,
+        code="invalid_request",
+        message="The request contains invalid values.",
+        message_key="api.invalid_request",
+        details={"errors": exc.errors},
+    )
+
+
+@api.exception_handler(Http404)
+def handle_not_found(request: HttpRequest, exc: Http404) -> HttpResponse:
+    """Return 404 when an endpoint raises Http404."""
+    return _error_response(
+        request=request,
+        status=404,
+        code="not_found",
+        message="Not found.",
+        message_key="api.not_found",
+    )
+
+
+@api.exception_handler(HttpError)
+def handle_http_error(request: HttpRequest, exc: HttpError) -> HttpResponse:
+    """Return the shared shape and keep the status code of the raised HttpError."""
+    return _error_response(
+        request=request,
+        status=exc.status_code,
+        code="http_error",
+        message=str(exc),
+        message_key="api.http_error",
+    )
+
+
+@api.exception_handler(Exception)
+def handle_internal_error(request: HttpRequest, exc: Exception) -> HttpResponse:
+    """Log an unhandled error, send it to Sentry and return 500.
+    The real message stays hidden unless DEBUG is on."""
+    logger.exception("Unhandled API error.", exc_info=exc)
+    sentry_sdk.capture_exception(exc)
+    message = str(exc) if settings.DEBUG else "Internal server error."
+    return _error_response(
+        request=request,
+        status=500,
+        code="internal_error",
+        message=message,
+        message_key="api.internal_error",
+    )
 
 
 @api.get("/health", response={200: HealthResponse, 503: HealthResponse})
