@@ -59,3 +59,9 @@ GitHub issues.
 
 Use the `sporameteo-sentry` skill in `.agents/skills/sporameteo-sentry/` to
 read a Sentry issue or alert.
+
+## API
+
+Use the `sporameteo-api-workflow` skill in
+`.agents/skills/sporameteo-api-workflow/` when a website feature reads or
+writes data, or when an `/api/v1/` endpoint changes.
