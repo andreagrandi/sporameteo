@@ -92,7 +92,9 @@ Output fields:
   - `latitude` and `longitude`: the middle of the square.
   - `percentage`: the whole score of the square on `target_date`.
 
-An empty `areas` list means no run is published. The endpoint leaves out the
+With no published run, the endpoint returns 503 with code
+`forecast_unavailable`, as `/squares` and `/estimate-overview` do. The endpoint
+leaves out the
 weather facts that the hero card shows. The app reads them from
 `/api/v1/areas/{square_id}` when the user opens an area.
 
@@ -150,6 +152,16 @@ Under #204, endpoints:
 
 ## Not covered
 
-The details panel asks `/api/v1/areas/{square_id}` once for each of the 8
-dates. That works for an app but costs 8 requests per square. This report does
-not propose a change, because the browser has the same cost today.
+The details panel asks `/api/v1/areas/{square_id}` once for the chosen date
+and once more for each of the other dates, so a new square costs up to 9
+requests. The browser keeps the answers for the last 12 squares. All endpoints
+share one count of 150 requests per minute for each client address, as
+`docs/api.md` describes. A person who opens about 16 new squares in one minute
+reaches the limit, and moving the map lowers that number. This report does not
+propose a change, because few people open squares that fast and no app exists
+yet. If the limit starts to block real users, one `/api/v1/areas/{square_id}`
+request could return the scores of all 8 dates.
+
+Phone carriers often send many phones through one shared address. Those phones
+would share one count. Telling them apart needs a key for each app install,
+which belongs with app sign-in.
