@@ -1,15 +1,17 @@
 """Django Ninja endpoints for the local application."""
 
 import logging
+import math
 from typing import Any, Literal
 
 import sentry_sdk
 from django.conf import settings
 from django.http import Http404, HttpRequest, HttpResponse
 from ninja import NinjaAPI, Schema, Status
-from ninja.errors import HttpError, ValidationError
+from ninja.errors import HttpError, Throttled, ValidationError
 
 from area_api.router import router as area_router
+from config.api_limits import ApiRateThrottle
 from config.api_schemas import ApiErrorSchema
 from config.health import database_is_available
 from map_api.api import router as map_router
@@ -25,7 +27,7 @@ class HealthResponse(Schema):
 
 logger = logging.getLogger(__name__)
 
-api = NinjaAPI(title="SporaMeteo API", version="1")
+api = NinjaAPI(title="SporaMeteo API", version="1", throttle=[ApiRateThrottle()])
 
 
 def _error_response(
@@ -68,6 +70,21 @@ def handle_not_found(request: HttpRequest, exc: Http404) -> HttpResponse:
     )
 
 
+@api.exception_handler(Throttled)
+def handle_throttled(request: HttpRequest, exc: Throttled) -> HttpResponse:
+    """Return 429 with the seconds to wait in the body.
+    Ninja adds the same number as the Retry-After header."""
+    retry_after = max(1, math.ceil(exc.wait)) if exc.wait is not None else 1
+    return _error_response(
+        request=request,
+        status=429,
+        code="too_many_requests",
+        message="Too many requests. Try again later.",
+        message_key="api.too_many_requests",
+        details={"retry_after": retry_after},
+    )
+
+
 @api.exception_handler(HttpError)
 def handle_http_error(request: HttpRequest, exc: HttpError) -> HttpResponse:
     """Return the shared shape and keep the status code of the raised HttpError."""
@@ -96,7 +113,7 @@ def handle_internal_error(request: HttpRequest, exc: Exception) -> HttpResponse:
     )
 
 
-@api.get("/health", response={200: HealthResponse, 503: HealthResponse})
+@api.get("/health", throttle=[], response={200: HealthResponse, 503: HealthResponse})
 def health(request: HttpRequest) -> HealthResponse | Status[HealthResponse]:
     """Return application availability and a database connection check."""
     if not database_is_available():

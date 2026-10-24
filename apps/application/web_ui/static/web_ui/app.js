@@ -3202,7 +3202,8 @@
         if (requestGeneration !== stateData.generation || controller.signal.aborted) return;
         if (!response.ok) {
           const code = body?.code;
-          if (code === "view_too_large" || code === "square_limit_exceeded") message(labels.map_zoom_in, "wait");
+          if (response.status === 429 || code === "too_many_requests") message(labels.map_too_many_requests, "error", true, () => scheduleFetch(0));
+          else if (code === "view_too_large" || code === "square_limit_exceeded") message(labels.map_zoom_in, "wait");
           else if (code === "outside_coverage") message(labels.map_outside_coverage, "error");
           else if (code === "forecast_unavailable") message(labels.map_forecast_unavailable, "error", true, () => scheduleFetch(0));
           else if (providerReasonText(code)) message(providerReasonText(code), "error", true, () => scheduleFetch(0));

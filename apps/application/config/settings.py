@@ -131,7 +131,17 @@ CACHES = {
             "CULL_FREQUENCY": 4,
         },
     },
+    # Request counts for the API limit, shared by all processes.
+    "rate_limit": {
+        "BACKEND": "django.core.cache.backends.db.DatabaseCache",
+        "LOCATION": "sporameteo_rate_limit_cache",
+        "OPTIONS": {"MAX_ENTRIES": 10000, "CULL_FREQUENCY": 3},
+    },
 }
+
+API_RATE_LIMIT_ENABLED = _env_bool(name="SPORAMETEO_API_RATE_LIMIT_ENABLED", default=not DEBUG)
+API_RATE_LIMIT_WINDOW_SECONDS = _env_int(name="SPORAMETEO_API_RATE_LIMIT_WINDOW_SECONDS", default=60)
+API_RATE_LIMIT_READ_REQUESTS = _env_int(name="SPORAMETEO_API_RATE_LIMIT_READ_REQUESTS", default=150)
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",

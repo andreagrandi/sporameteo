@@ -281,6 +281,7 @@ also helps inspect an API response.
 | 410 | `update_expired` | The requested update UUID is no longer available. Refresh the map. |
 | 503 | `forest_build_unavailable`, `forest_layer_unavailable` | The configured completed build or checked artifact is unavailable. |
 | 503 | `forecast_unavailable` | No region has a published run yet. |
+| 429 | `too_many_requests` | One client sent too many requests in the current window. `details.retry_after` and the `Retry-After` header give the seconds to wait. |
 | 422 | `invalid_request` | A body value fails validation. `details.errors` lists the field errors. |
 | 404 | `not_found` | The endpoint raised a generic not found error. |
 | Any | `http_error` | The endpoint raised an HTTP error. The status code comes from that error. |
@@ -296,6 +297,57 @@ A deleted update returns this shape, with the requested UUID in `details`:
   "details": {"update_id": "550e8400-e29b-41d4-a716-446655440000"}
 }
 ```
+
+## Request limit
+
+Every endpoint except `/health` counts requests per client address in a fixed
+time window. A client that goes over the limit gets a 429 answer until the
+window ends. All endpoints share one count.
+
+| Setting | Environment name | Default |
+| --- | --- | --- |
+| `API_RATE_LIMIT_ENABLED` | `SPORAMETEO_API_RATE_LIMIT_ENABLED` | On, and off when `DEBUG` is on |
+| `API_RATE_LIMIT_WINDOW_SECONDS` | `SPORAMETEO_API_RATE_LIMIT_WINDOW_SECONDS` | 60 |
+| `API_RATE_LIMIT_READ_REQUESTS` | `SPORAMETEO_API_RATE_LIMIT_READ_REQUESTS` | 150 |
+
+`/health` is never limited, so uptime checks keep working.
+
+The 429 answer uses the shared error shape. `details.retry_after` holds the
+seconds until the window ends, and the `Retry-After` header holds the same
+number:
+
+```json
+{
+  "code": "too_many_requests",
+  "message": "Too many requests. Try again later.",
+  "message_key": "api.too_many_requests",
+  "details": {"retry_after": 23}
+}
+```
+
+Production runs Cloudflare, then Dokku nginx, then gunicorn. nginx replaces
+`X-Forwarded-For` with the address it saw, so the header holds one address.
+That address is usually a Cloudflare edge address shared by many visitors. When
+it lies inside one of Cloudflare's published ranges and `CF-Connecting-IP` is
+set, the limit uses `CF-Connecting-IP`. Otherwise it uses the address from
+`X-Forwarded-For`, then `REMOTE_ADDR`. A `CF-Connecting-IP` from any other
+address is ignored, so a client that reaches the server directly cannot fake
+its address. The ranges sit in `apps/application/config/api_limits.py`, copied
+on 24 October 2026 from https://www.cloudflare.com/ips-v4 and
+https://www.cloudflare.com/ips-v6.
+
+The counts live in the `sporameteo_rate_limit_cache` database table, shared by
+all gunicorn processes. The migration `estimate_updates/0009` and
+`createcachetable` create it.
+
+The default of 150 requests per 60 seconds comes from a measurement on
+24 October 2026. One busy map session on the local app was driven in
+Playwright. It zoomed in, panned 32 times, opened squares 9 times, searched 4
+places and changed dates. It sent 57 API requests in 79 seconds: 27
+`/squares`, 21 `/areas/{id}`, 8 `/places/search` and 1 `/info`. The busiest 60
+seconds held 48 requests. The limit is about three times that busiest minute.
+That leaves room for a few people who share one address, such as a home
+network or a mobile carrier.
 
 ## Largest-view measurements
 

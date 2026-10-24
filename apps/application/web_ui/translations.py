@@ -244,6 +244,7 @@ TEXT = {
         "map_loading_estimates": "Loading estimates for {date}.",
         "map_no_results": "No estimates are stored in this view.",
         "map_request_error": "The estimates could not be loaded. Try again.",
+        "map_too_many_requests": "Too many requests from your connection. Wait a minute and try again.",
         "map_outside_coverage": "This view has no published estimate, or it is outside Italy.",
         "map_pending": "The first weather update for this area is still pending.",
         "map_forecast_unavailable": "Estimates are not ready yet. Try again later.",
