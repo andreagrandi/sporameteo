@@ -61,7 +61,7 @@
 </div>
 </div>
 <!-- Sample card -->
-<div class="lg:col-span-5 min-w-0 space-y-6">
+<div class="lg:col-span-5 min-w-0">
 <div class="relative bg-surface-container-low rounded-xl p-4 sm:p-6 lg:p-7 shadow-xl space-y-5">
 <div class="flex items-start justify-between gap-4">
 <div class="space-y-1 min-w-0">
@@ -146,10 +146,12 @@
 </a>
 </div>
 </div>
-{% if top_areas %}<div class="bg-surface-container-low rounded-xl p-4 sm:p-6 lg:p-7 shadow-sm space-y-3">
+</div>
+</div>
+{% if top_areas %}<div class="mt-10 lg:mt-14 bg-surface-container-low rounded-xl p-4 sm:p-6 lg:p-7 shadow-sm space-y-3">
 <h2 class="font-title-lg text-title-lg text-primary font-serif">{{ top_areas.heading }}</h2>
-<ol class="space-y-1.5" data-landing-top-areas>
-{% for row in top_areas.rows %}<li data-landing-top-area>
+<ol class="grid grid-cols-1 md:grid-cols-2 md:grid-rows-4 md:grid-flow-col gap-x-6 gap-y-1.5" data-landing-top-areas>
+{% for row in top_areas.rows %}<li class="min-w-0" data-landing-top-area>
 <a class="flex items-center justify-between gap-3 py-1.5 px-3 rounded bg-surface-container-lowest hover:bg-surface-container transition-colors" data-app-link href="{{ row.map_url }}">
 <span class="flex items-center gap-3 min-w-0">
 <span class="font-mono text-outline num shrink-0">{{ row.rank }}</span>
@@ -163,8 +165,6 @@
 </li>{% endfor %}
 </ol>
 </div>{% endif %}
-</div>
-</div>
 </div>
 </section>
 <!-- SECTION 2: WHY SPORAMETEO -->
