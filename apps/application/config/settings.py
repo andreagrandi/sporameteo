@@ -84,6 +84,7 @@ INSTALLED_APPS = [
     "map_api",
     "place_search",
     "web_ui",
+    "config",
 ]
 
 SPORAMETEO_TERRAIN_BUILD_VERSION = os.getenv(
