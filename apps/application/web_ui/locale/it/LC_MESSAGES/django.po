@@ -596,6 +596,9 @@ msgstr "Non ci sono stime salvate in questa vista."
 msgid "The estimates could not be loaded. Try again."
 msgstr "Non è stato possibile caricare le stime. Riprova."
 
+msgid "Too many requests from your connection. Wait a minute and try again."
+msgstr "Troppe richieste dalla tua connessione. Aspetta un minuto e riprova."
+
 msgid "This view has no published estimate, or it is outside Italy."
 msgstr "Per questa vista non c'è una stima pubblicata, oppure è fuori dall'Italia."
 

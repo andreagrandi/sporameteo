@@ -18,3 +18,9 @@ def plain_static_names(settings) -> None:
         **settings.STORAGES,
         "staticfiles": {"BACKEND": "whitenoise.storage.CompressedStaticFilesStorage"},
     }
+
+
+@pytest.fixture(autouse=True)
+def api_rate_limit_off(settings) -> None:
+    """Switch the API request limit off, because tests run with DEBUG off."""
+    settings.API_RATE_LIMIT_ENABLED = False

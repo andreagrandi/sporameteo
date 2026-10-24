@@ -79,6 +79,9 @@ msgstr "No estimates are stored in this view."
 msgid "The estimates could not be loaded. Try again."
 msgstr "The estimates could not be loaded. Try again."
 
+msgid "Too many requests from your connection. Wait a minute and try again."
+msgstr "Too many requests from your connection. Wait a minute and try again."
+
 msgid "This view has no published estimate, or it is outside Italy."
 msgstr "This view has no published estimate, or it is outside Italy."
 
