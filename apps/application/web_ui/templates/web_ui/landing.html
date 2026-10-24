@@ -61,12 +61,12 @@
 </div>
 </div>
 <!-- Sample card -->
-<div class="lg:col-span-5 min-w-0">
+<div class="lg:col-span-5 min-w-0 space-y-6">
 <div class="relative bg-surface-container-low rounded-xl p-4 sm:p-6 lg:p-7 shadow-xl space-y-5">
 <div class="flex items-start justify-between gap-4">
 <div class="space-y-1 min-w-0">
 {% if older_notice %}<span class="inline-block px-2.5 py-0.5 rounded bg-tertiary-container/10 text-on-tertiary-container font-caption-topo text-caption-topo uppercase tracking-wider font-semibold" data-landing-older>{{ older_notice }}</span>{% endif %}
-<h2 class="font-headline-md text-headline-md text-primary font-serif">{% translate "Abetone, Tuscany" %}</h2>
+<h2 class="font-headline-md text-headline-md text-primary font-serif" data-landing-hero-title>{{ hero.title }}</h2>
 {% if hero.coordinates %}<p class="font-caption-topo text-caption-topo text-outline font-mono num">{{ hero.coordinates }}</p>{% endif %}
 </div>
 <div class="w-10 h-10 shrink-0 rounded-lg bg-surface-container-highest flex items-center justify-center text-primary shadow-sm">
@@ -141,11 +141,28 @@
 <span>{{ hero.updated }}</span>
 </span>{% endif %}
 <a class="font-title-md text-title-md text-primary hover:text-on-tertiary-container transition-colors inline-flex items-center gap-1 group" data-app-link data-landing-hero-link href="{{ hero.map_url }}">
-<span>{% translate "Open Abetone on the map" %}</span>
+<span>{{ hero.link_text }}</span>
 <span class="material-symbols-outlined text-[18px] transition-transform group-hover:translate-x-1">arrow_forward</span>
 </a>
 </div>
 </div>
+{% if top_areas %}<div class="bg-surface-container-low rounded-xl p-4 sm:p-6 lg:p-7 shadow-sm space-y-3">
+<h2 class="font-title-lg text-title-lg text-primary font-serif">{{ top_areas.heading }}</h2>
+<ol class="space-y-1.5" data-landing-top-areas>
+{% for row in top_areas.rows %}<li data-landing-top-area>
+<a class="flex items-center justify-between gap-3 py-1.5 px-3 rounded bg-surface-container-lowest hover:bg-surface-container transition-colors" data-app-link href="{{ row.map_url }}">
+<span class="flex items-center gap-3 min-w-0">
+<span class="font-mono text-outline num shrink-0">{{ row.rank }}</span>
+<span class="min-w-0">
+<span class="block font-title-md text-title-md text-primary">{{ row.title }}</span>
+<span class="block font-caption-topo text-caption-topo text-outline font-mono num">{{ row.coordinates }}</span>
+</span>
+</span>
+<span class="font-mono font-medium text-on-tertiary-container num shrink-0">{{ row.percent }}</span>
+</a>
+</li>{% endfor %}
+</ol>
+</div>{% endif %}
 </div>
 </div>
 </div>

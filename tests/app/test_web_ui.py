@@ -1,15 +1,23 @@
 from __future__ import annotations
 
 import re
-from datetime import date
+from datetime import date, timedelta
 
+import numpy
 import pytest
+from django.contrib.gis.geos import Polygon
 from django.core.management import call_command
+from django.db import connection
 from django.test import Client, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 
+from map_api import published
+from map_api.published import NO_VALUE
+from national_grid.models import GridCell, GridRegion, Municipality
+from sporameteo.finds.grid import format_cell_id
 from tests.app.test_map_api import MAP_DATE, map_fixture, publish_run  # noqa: F401
-from web_ui import landing_examples
+from web_ui import landing_examples, landing_top_areas
 from web_ui.formatting import format_date, format_measurement
 
 
@@ -371,6 +379,7 @@ def test_landing_shows_no_percentage_and_a_reason_without_a_published_run(
     assert "data-landing-hero-last" not in body
     assert "data-landing-area=" not in body
     assert "data-landing-older" not in body
+    assert "data-landing-top-areas" not in body
     assert body.count('href="/map/"') >= 5
 
 
@@ -410,3 +419,157 @@ def test_landing_cards_show_the_values_the_squares_api_returns(
     for key in ("borgotaro", "sila", "fiemme"):
         assert f'data-landing-area="{key}"' not in body
     assert "data-landing-older" in body
+    assert "data-landing-top-areas" not in body
+    assert "data-landing-hero-title>Abetone, " in body
+
+
+def _publish_scores(
+    *, map_fixture: dict[str, object], settings, monkeypatch: pytest.MonkeyPatch, specs: list[tuple[int | None, str | None]],  # noqa: F811
+) -> tuple[list[str], str]:
+    """Publish one run whose squares have the given first-day scores and municipalities."""
+    settings.SPORAMETEO_FOREST_BUILD_VERSION = map_fixture["build"].version
+    region = GridRegion.objects.get(istat_code="09", build=map_fixture["build"].grid_build)
+    towns: dict[str, Municipality] = {}
+    corner_e, corner_n, values, ids = [], [], [], []
+    for index, (score, town) in enumerate(specs):
+        east = 4_310_000 + index * 500
+        corner_e.append(east)
+        corner_n.append(2_300_000)
+        row = [NO_VALUE] * 8
+        if score is not None:
+            row[0], row[7] = score, score // 2
+        values.append(row)
+        ids.append(format_cell_id(corner_e=east, corner_n=2_300_000))
+        if town is None:
+            continue
+        if town not in towns:
+            towns[town] = Municipality.objects.create(
+                istat_code=f"{len(towns):06d}", name=town, region_code="09", geometry=region.geometry
+            )
+        square = Polygon.from_bbox((east, 2_300_000, east + 500, 2_300_500))
+        square.srid = 3035
+        GridCell.objects.create(
+            cell_id=ids[-1], corner_e=east, corner_n=2_300_000, geometry=square, municipality=towns[town]
+        )
+    points = published.OverviewPoints(
+        corner_e=numpy.array(corner_e, dtype=numpy.int32),
+        corner_n=numpy.array(corner_n, dtype=numpy.int32),
+        values=numpy.array(values, dtype=numpy.uint8),
+        update_index=numpy.zeros(len(specs), dtype=numpy.int16),
+        calculated_at=["2026-10-12T09:00:00+00:00"],
+    )
+    monkeypatch.setattr(published, "overview_points", lambda **kwargs: points)
+    publish_run(fixture=map_fixture, updates={"44.00,11.00": map_fixture["new_update"]})
+    monkeypatch.setattr("weather_on_demand.services.italian_assessment_date", lambda *args, **kwargs: MAP_DATE)
+    detail = {
+        "selection": {"centroid": {"latitude": 44.1, "longitude": 11.2}},
+        "weather": {
+            "selected_day": {"mean_temperature_c": 12.0, "min_temperature_c": 7.0},
+            **{f"recent_rain_{days}_days": {"state": "available", "value": float(days)} for days in (7, 14, 21)},
+        },
+        "facts": [{"role_key": "forest_share", "value": 0.8}],
+        "estimate": {"calculated_at": None},
+    }
+    monkeypatch.setattr(landing_top_areas, "_read_detail", lambda **kwargs: detail)
+    return ids, region.name
+
+
+@pytest.mark.django_db(transaction=True)
+def test_top_areas_sort_by_score_keep_one_square_per_municipality_and_skip_gaps(
+    map_fixture: dict[str, object], monkeypatch: pytest.MonkeyPatch, settings,  # noqa: F811
+) -> None:
+    ids, region_name = _publish_scores(
+        map_fixture=map_fixture,
+        settings=settings,
+        monkeypatch=monkeypatch,
+        specs=[(40, "Alba"), (70, "Bardi"), (70, "Bardi"), (None, "Carpi"), (55, "Dovera"), (99, None)],
+    )
+
+    entries = landing_top_areas.top_areas(
+        current=published.published_map(), first=MAP_DATE, last=MAP_DATE + timedelta(days=7)
+    )
+
+    assert [entry["square_id"] for entry in entries] == [ids[1], ids[4], ids[0]]
+    assert [entry["first"] for entry in entries] == [70, 55, 40]
+    assert [entry["last"] for entry in entries] == [35, 27, 20]
+    assert [entry["title"] for entry in entries] == [
+        f"{name}, {region_name}" for name in ("Bardi", "Dovera", "Alba")
+    ]
+
+
+@pytest.mark.django_db(transaction=True)
+def test_top_areas_hold_at_most_eight_squares(
+    map_fixture: dict[str, object], monkeypatch: pytest.MonkeyPatch, settings,  # noqa: F811
+) -> None:
+    _publish_scores(
+        map_fixture=map_fixture,
+        settings=settings,
+        monkeypatch=monkeypatch,
+        specs=[(30 + index, f"Town {index}") for index in range(10)],
+    )
+
+    entries = landing_top_areas.top_areas(current=published.published_map(), first=MAP_DATE, last=MAP_DATE)
+
+    assert [entry["first"] for entry in entries] == [39, 38, 37, 36, 35, 34, 33, 32]
+
+
+@pytest.mark.django_db(transaction=True)
+def test_second_top_areas_call_is_served_from_the_cache(
+    map_fixture: dict[str, object], monkeypatch: pytest.MonkeyPatch, settings,  # noqa: F811
+) -> None:
+    _publish_scores(
+        map_fixture=map_fixture, settings=settings, monkeypatch=monkeypatch, specs=[(40, "Alba"), (50, "Bardi")]
+    )
+    current = published.published_map()
+    first_call = landing_top_areas.top_areas(current=current, first=MAP_DATE, last=MAP_DATE)
+
+    with CaptureQueriesContext(connection) as queries:
+        second_call = landing_top_areas.top_areas(current=current, first=MAP_DATE, last=MAP_DATE)
+
+    assert second_call == first_call
+    assert all("national_grid" not in query["sql"] for query in queries.captured_queries)
+
+
+@pytest.mark.django_db(transaction=True)
+def test_top_areas_with_a_failed_detail_read_are_cached_for_a_short_time(
+    map_fixture: dict[str, object], monkeypatch: pytest.MonkeyPatch, settings,  # noqa: F811
+) -> None:
+    _publish_scores(
+        map_fixture=map_fixture, settings=settings, monkeypatch=monkeypatch, specs=[(40, "Alba"), (50, "Bardi")]
+    )
+    reads = []
+    monkeypatch.setattr(landing_top_areas, "_read_detail", lambda **kwargs: reads.append(kwargs))
+    current = published.published_map()
+
+    first_call = landing_top_areas.top_areas(current=current, first=MAP_DATE, last=MAP_DATE)
+    second_call = landing_top_areas.top_areas(current=current, first=MAP_DATE, last=MAP_DATE)
+
+    assert [entry["facts"] for entry in first_call] == [None, None]
+    assert second_call == first_call
+    assert len(reads) == 2
+
+
+@pytest.mark.django_db(transaction=True)
+def test_landing_hero_shows_the_picked_area_and_the_list_links_to_the_map(
+    map_fixture: dict[str, object], monkeypatch: pytest.MonkeyPatch, settings,  # noqa: F811
+) -> None:
+    ids, region_name = _publish_scores(
+        map_fixture=map_fixture, settings=settings, monkeypatch=monkeypatch, specs=[(40, "Alba"), (70, "Bardi")]
+    )
+    monkeypatch.setattr(landing_examples.random, "choice", lambda entries: entries[-1])
+
+    body = Client(HTTP_ACCEPT_LANGUAGE="en-GB,en;q=0.9").get(path="/").content.decode()
+
+    assert "Best areas today" in body
+    assert body.count("data-landing-top-area>") == 2
+    assert f'data-landing-hero-title>Alba, {region_name}<' in body
+    assert "Open Alba on the map" in body
+    assert "For Alba they are" in body
+    assert "44.1000° N • 11.2000° E" in body
+    hero_link = re.search(r'data-landing-hero-link href="([^"]+)"', body)
+    assert hero_link is not None
+    assert f"square={ids[0]}&amp;date={MAP_DATE.isoformat()}" in hero_link.group(1)
+    first_row = re.search(r"data-landing-top-area>\s*<a[^>]*href=\"([^\"]+)\"", body)
+    assert first_row is not None
+    assert first_row.group(1).startswith(f"/map/?square={ids[1]}&amp;date={MAP_DATE.isoformat()}&amp;center=")
+    assert "zoom=13&amp;details=true" in first_row.group(1)
