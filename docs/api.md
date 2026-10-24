@@ -281,6 +281,10 @@ also helps inspect an API response.
 | 410 | `update_expired` | The requested update UUID is no longer available. Refresh the map. |
 | 503 | `forest_build_unavailable`, `forest_layer_unavailable` | The configured completed build or checked artifact is unavailable. |
 | 503 | `forecast_unavailable` | No region has a published run yet. |
+| 422 | `invalid_request` | A body value fails validation. `details.errors` lists the field errors. |
+| 404 | `not_found` | The endpoint raised a generic not found error. |
+| Any | `http_error` | The endpoint raised an HTTP error. The status code comes from that error. |
+| 500 | `internal_error` | An unexpected error. The message is "Internal server error." unless `DEBUG` is on, and the error goes to Sentry. |
 
 A deleted update returns this shape, with the requested UUID in `details`:
 
