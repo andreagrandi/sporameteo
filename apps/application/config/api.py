@@ -27,7 +27,15 @@ class HealthResponse(Schema):
 
 logger = logging.getLogger(__name__)
 
-api = NinjaAPI(title="SporaMeteo API", version="1", throttle=[ApiRateThrottle()])
+api = NinjaAPI(
+    title="SporaMeteo API",
+    version="1.0.0",
+    description=(
+        "Mushroom growing conditions for each map square in Italy, "
+        "based on recent weather and forest cover."
+    ),
+    throttle=[ApiRateThrottle()],
+)
 
 
 def _error_response(

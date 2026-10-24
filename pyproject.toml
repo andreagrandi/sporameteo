@@ -39,6 +39,7 @@ dev = [
     "pytest-playwright>=0.7.1",
     "pytest-xdist>=3.8.0",
     "pytest-repeat>=0.9.4",
+    "openapi-spec-validator>=0.9.0",
 ]
 
 [build-system]
