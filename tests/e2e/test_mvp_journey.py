@@ -1,28 +1,37 @@
-"""Browser checks for the complete visitor journey on the published Tuscany run.
+"""Browser checks for the complete visitor journey on a published Tuscany run.
 
-The journey reads the local database with no stubs, except the place search
-provider, which is a remote service.
+The data comes from fixtures in the test database, which a test server reads.
+Nothing is stubbed except the place search provider, which is a remote service.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import date
-from urllib.error import HTTPError
+from pathlib import Path
 from urllib.request import Request, urlopen
 
 import pytest
+from django.core.cache import caches
 from playwright.sync_api import Browser, Locator, Page, expect
 
+from weather_on_demand.services import italian_assessment_date
+
+from tests.e2e.journey_data import JourneyData, build_journey_data
 from tests.e2e.test_favorites import (
     _open_favorites,
     _read_storage,
     _save_selected,
 )
 
+
+# The browser plugin keeps an event loop running in the test thread. Django refuses
+# database calls there unless this is set, and the test database setup makes such calls.
+os.environ.setdefault("DJANGO_ALLOW_ASYNC_UNSAFE", "true")
 
 DESKTOP = (1280, 800)
 PHONE = (390, 844)
@@ -72,20 +81,27 @@ class Visitor:
             locator.click()
 
 
-@pytest.fixture(autouse=True)
-def published_run(base_url: str) -> None:
-    """Skip when the database holds no published Tuscany run, as in the empty CI database.
+@pytest.fixture
+def journey_data(
+    settings, tmp_path: Path, transactional_db: None
+) -> JourneyData:
+    """Store the published run, weather and details that the journey reads."""
+    caches["map"].clear()
+    data = build_journey_data(
+        layer_path=tmp_path / "forest-layer.gz",
+        assessment_date=italian_assessment_date(),
+    )
+    settings.SPORAMETEO_FOREST_BUILD_VERSION = data.forest_build_version
+    settings.SPORAMETEO_TERRAIN_BUILD_VERSION = data.terrain_build_version
+    # The test server runs with debug off, so the request limit would be on by default.
+    settings.API_RATE_LIMIT_ENABLED = False
+    return data
 
-    The empty CI database has no forest build either, so the info endpoint answers 503.
-    """
-    try:
-        info = _api_get(base_url, "/info")
-    except HTTPError as error:
-        if error.code != 503:
-            raise
-        pytest.skip("No forest build in this database")
-    if not info.get("run"):
-        pytest.skip("No published Tuscany run in this database")
+
+@pytest.fixture
+def journey_url(journey_data: JourneyData, live_server) -> str:
+    """Return the address of the test server, which reads the fixture rows."""
+    return live_server.url
 
 
 @pytest.fixture
@@ -343,10 +359,11 @@ def _rain_amount(page: Page, *, language: str) -> float:
     return float(f"{match.group(1)}.{match.group(2)}")
 
 
+@pytest.mark.django_db(transaction=True)
 @pytest.mark.parametrize("device", ["desktop", "phone"])
 @pytest.mark.parametrize("language", ["it", "en"])
 def test_real_data_journey_from_search_to_favorite_and_language_switch(
-    new_visitor: Callable[..., Visitor], base_url: str, language: str, device: str
+    new_visitor: Callable[..., Visitor], journey_url: str, language: str, device: str
 ) -> None:
     """Walk the whole visitor journey on the published Tuscany run, with no stubs.
 
@@ -354,16 +371,16 @@ def test_real_data_journey_from_search_to_favorite_and_language_switch(
     """
     visitor = new_visitor(language=language, device=device)
     page = visitor.page
-    info = _api_get(base_url, "/info")
+    info = _api_get(journey_url, "/info")
     dates: list[str] = info["target_dates"]
     first_date, last_date = dates[0], dates[-1]
-    place = _resolve_place(base_url)
+    place = _resolve_place(journey_url)
     cell_id = str(place["square_id"])
     assert place["status"] == "available"
     _stub_place_search(page, results=[ABETONE])
 
     # Zoomed out: area averages only, no single percentage and no details.
-    _open_real_map(page, base_url, path=f"{ZOOMED_OUT_URL}&date={first_date}")
+    _open_real_map(page, journey_url, path=f"{ZOOMED_OUT_URL}&date={first_date}")
     squares = _rendered_squares(page)
     assert squares["total"] > 0
     assert squares["overview"] == squares["total"]
@@ -403,7 +420,7 @@ def test_real_data_journey_from_search_to_favorite_and_language_switch(
 
     # Today: percentage, date and facts match the API answer for this square.
     today_estimate = _expected_estimate(
-        base_url,
+        journey_url,
         cell_id=cell_id,
         latitude=float(ABETONE["latitude"]),
         longitude=float(ABETONE["longitude"]),
@@ -437,7 +454,7 @@ def test_real_data_journey_from_search_to_favorite_and_language_switch(
     # Day seven: the percentage and date follow the chosen date, then come back.
     _choose_date(visitor, last_date)
     last_estimate = _expected_estimate(
-        base_url,
+        journey_url,
         cell_id=cell_id,
         latitude=float(ABETONE["latitude"]),
         longitude=float(ABETONE["longitude"]),
@@ -527,7 +544,7 @@ def test_real_data_journey_from_search_to_favorite_and_language_switch(
     visitor.press(card.locator("[data-favorite-open]"))
     selected = _selected_date(page)
     current = _expected_estimate(
-        base_url,
+        journey_url,
         cell_id=cell_id,
         latitude=float(ABETONE["latitude"]),
         longitude=float(ABETONE["longitude"]),
@@ -541,14 +558,15 @@ def test_real_data_journey_from_search_to_favorite_and_language_switch(
     assert visitor.errors == []
 
 
+@pytest.mark.django_db(transaction=True)
 @pytest.mark.parametrize("language", ["it", "en"])
 def test_real_data_view_outside_italy_explains_the_gap(
-    new_visitor: Callable[..., Visitor], base_url: str, language: str
+    new_visitor: Callable[..., Visitor], journey_url: str, language: str
 ) -> None:
     """Show that a view outside every published region says why it has no estimates."""
     visitor = new_visitor(language=language, device="desktop")
     page = visitor.page
-    page.goto(url=f"{base_url}/map/?center=48.85,2.35&zoom=12", wait_until="domcontentloaded")
+    page.goto(url=f"{journey_url}/map/?center=48.85,2.35&zoom=12", wait_until="domcontentloaded")
     expect(page.locator("#mapmsgs")).to_contain_text(_labels(page)["map_outside_coverage"])
     assert page.evaluate("() => window.SporaMeteoMap.getDiagnostics().squareSetCount") == 0
     expect(page.locator(DETAILS)).to_have_count(0)

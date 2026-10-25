@@ -17,11 +17,10 @@ from urllib.parse import urlencode
 from django.utils import formats, timezone, translation
 from django.utils.translation import gettext
 
-from map_api import published
+from map_api import published, top_areas
 from map_api.published import MapReadError
 from weather_on_demand import services as weather_services
 
-from . import landing_top_areas
 from .formatting import format_date, format_decimal, format_short_date, format_weekday
 from .translations import labels_for
 
@@ -41,7 +40,7 @@ CENTER_MARGIN_DEGREES = 0.0003
 
 def _read_square(*, current: published.PublishedMap, square_id: str, target_date: date) -> dict[str, Any]:
     """Read one square for one date through the same cached read the map uses."""
-    latitude, longitude = landing_top_areas._centre(square_id=square_id)
+    latitude, longitude = top_areas.square_centre(square_id=square_id)
     margin = CENTER_MARGIN_DEGREES
     try:
         body = published.read_squares(
@@ -74,7 +73,7 @@ def _collect(*, current: published.PublishedMap, first: date, last: date) -> dic
         last_properties = (
             _read_square(current=current, square_id=square_id, target_date=last) if last != first else today_properties
         )
-        latitude, longitude = landing_top_areas._centre(square_id=square_id)
+        latitude, longitude = top_areas.square_centre(square_id=square_id)
         squares[square_id] = {
             "first": _percentage(properties=today_properties),
             "last": _percentage(properties=last_properties),
@@ -85,11 +84,11 @@ def _collect(*, current: published.PublishedMap, first: date, last: date) -> dic
     hero = squares[HERO_SQUARE]
     hero["facts"] = None
     if hero["first"] is not None and hero["update_id"]:
-        detail = landing_top_areas._read_detail(
+        detail = top_areas.read_detail(
             square_id=HERO_SQUARE, target_date=first, update_id=hero["update_id"]
         )
         if detail is not None:
-            hero["facts"] = landing_top_areas._hero_facts(detail=detail)
+            hero["facts"] = top_areas.hero_facts(detail=detail)
     return squares
 
 
@@ -315,20 +314,20 @@ def landing_examples(*, language: str) -> dict[str, Any]:
         if current.newest.assessment_date < today
         else ""
     )
-    entries = landing_top_areas.top_areas(current=current, first=first, last=last)
+    entries = top_areas.top_areas(current=current, first=first, last=last)
     hero_square = random.choice(entries) if entries else _fallback_hero_square(raw=raw)
-    top_areas = None
+    best_areas = None
     if entries:
         heading = gettext("Best areas today")
         if first != today:
             heading = gettext("Best areas, {day}").format(day=_first_label(first=first, today=today, language=language))
-        top_areas = {
+        best_areas = {
             "heading": heading,
             "rows": _top_rows(entries=entries, first=first, language=language),
         }
     return {
         "hero": _hero(square=hero_square, first=first, last=last, today=today, language=language),
-        "top_areas": top_areas,
+        "top_areas": best_areas,
         "areas": areas,
         "older_notice": older_notice,
     }

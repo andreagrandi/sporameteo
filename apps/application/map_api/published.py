@@ -650,7 +650,7 @@ def _outside_coverage() -> MapReadError:
     )
 
 
-def _offset(*, run: PublishedRun, target_date: date) -> int:
+def day_offset(*, run: PublishedRun, target_date: date) -> int:
     return (target_date - run.assessment_date).days
 
 
@@ -695,7 +695,7 @@ def read_squares(
                 result=results.get(square.region_code, {}).get(tile, {}).get(square.forest_cell_id),
                 summary=summaries.get(square.region_code),
                 target_date=target_date,
-                offset=_offset(run=published.runs[square.region_code], target_date=target_date)
+                offset=day_offset(run=published.runs[square.region_code], target_date=target_date)
                 if square.region_code in published.runs
                 else 0,
             ),
@@ -756,7 +756,7 @@ def _run_columns(
     centre_e = points.corner_e + CELL_SIZE_M / 2
     centre_n = points.corner_n + CELL_SIZE_M / 2
     inside = shapely.contains_xy(area, centre_e, centre_n)
-    offset = _offset(run=run, target_date=target_date)
+    offset = day_offset(run=run, target_date=target_date)
     if 0 <= offset < points.values.shape[1]:
         values = points.values[inside, offset].astype(numpy.int64)
     else:

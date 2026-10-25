@@ -64,7 +64,7 @@ The browser code does not run on the landing page.
 
 | Feature | Data source | Phone app needs it | Reason |
 |---|---|---|---|
-| Best areas today, up to 8 municipalities | `web_ui.landing_top_areas.top_areas`, built on the server | Yes | The app has no way to get this list today, and it is a quick start for users who have no place in mind. |
+| Best areas today, up to 8 municipalities | `map_api.top_areas.top_areas`, built on the server | Yes | The app has no way to get this list today, and it is a quick start for users who have no place in mind. |
 | Hero card of one area | One random entry of the best areas, with facts read from `read_area_detail` | No | It is a teaser for the map, and the app can open the details panel for a best area. |
 | Four fixed example areas | `map_api.published.read_squares` for fixed squares in `AREA_SQUARES` | No | They show what the map does to a new visitor. |
 | Text sections on the method, the factors and foraging ethics | Translated text in `landing.html` | No | The app can ship this text or link to the website. |
@@ -119,8 +119,8 @@ profile. That work belongs with the account tickets, not with these endpoints.
 |---|---|---|
 | Scores of squares | `map_api.published.read_squares` | Shared. The `/squares` endpoint and the landing example cards both call it. |
 | Available dates | `map_api.published.PublishedMap.available_dates` | Shared. `/info` and `landing_examples` both call it with `weather_on_demand.services.italian_assessment_date`. |
-| Area details | `area_api.router.read_area_detail` | Shared. The `/areas/{square_id}` endpoint and `landing_top_areas._read_detail` both call it. It returns the detail body or the API error. |
-| Best areas | `web_ui.landing_top_areas.top_areas` today | Only the landing page calls it. It lives in `web_ui` and imports the private `_offset` from `map_api.published`. It should move to `map_api` so the new endpoint and the landing page both call it. |
+| Area details | `area_api.router.read_area_detail` | Shared. The `/areas/{square_id}` endpoint and `map_api.top_areas.read_detail` both call it. It returns the detail body or the API error. |
+| Best areas | `map_api.top_areas.top_areas` | Only the landing page calls it today. It lives in `map_api` and finds the column of a date in each run with the public `map_api.published.day_offset`, so the `/top-areas` endpoint of #209 can call it without importing from `web_ui`. |
 
 The map page renders 8 dates on the server with `web_ui.views._dates`, from
 `timezone.localdate`. The browser then replaces them with the dates from

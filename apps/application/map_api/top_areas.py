@@ -1,4 +1,4 @@
-"""Find the best scoring areas of the first published date for the landing page.
+"""Find the best scoring areas of the first published date for the landing page and the API.
 
 The ranking reads the cached per-square arrays of the published runs, so a request never
 queries the stored results. Only the municipality and region names are read from the grid
@@ -17,7 +17,7 @@ from ninja import Status
 
 from area_api.router import read_area_detail
 from map_api import published
-from map_api.published import GRID_TO_WGS84, NO_VALUE, _offset
+from map_api.published import GRID_TO_WGS84, NO_VALUE, day_offset
 from national_grid.models import GridCell, GridRegion
 from sporameteo.finds.grid import CELL_SIZE_M, format_cell_id, parse_cell_id
 
@@ -32,7 +32,7 @@ RETRY_SECONDS = 15 * 60
 DAYS_AHEAD = 8
 
 
-def _centre(*, square_id: str) -> tuple[float, float]:
+def square_centre(*, square_id: str) -> tuple[float, float]:
     """Return the latitude and longitude of the middle of one square."""
     address = parse_cell_id(square_id, expected_size_m=CELL_SIZE_M)
     half = CELL_SIZE_M / 2
@@ -40,7 +40,7 @@ def _centre(*, square_id: str) -> tuple[float, float]:
     return latitude, longitude
 
 
-def _read_detail(*, square_id: str, target_date: date, update_id: str) -> dict[str, Any] | None:
+def read_detail(*, square_id: str, target_date: date, update_id: str) -> dict[str, Any] | None:
     """Read the area details with the function behind the detail endpoint and its cache."""
     try:
         result = read_area_detail(square_id=square_id, target_date=target_date, update_id=UUID(update_id))
@@ -53,7 +53,7 @@ def _read_detail(*, square_id: str, target_date: date, update_id: str) -> dict[s
     return result
 
 
-def _hero_facts(*, detail: dict[str, Any]) -> dict[str, Any]:
+def hero_facts(*, detail: dict[str, Any]) -> dict[str, Any]:
     """Pick the few detail values the hero card shows."""
     weather = detail.get("weather") or {}
     selected = weather.get("selected_day") or {}
@@ -83,14 +83,14 @@ def _candidates(*, current: published.PublishedMap, first: date, last: date) -> 
     parts: dict[str, list[numpy.ndarray]] = {"corner_e": [], "corner_n": [], "first": [], "last": [], "update": []}
     public_ids: list[str] = []
     for run in current.runs.values():
-        first_offset = _offset(run=run, target_date=first)
+        first_offset = day_offset(run=run, target_date=first)
         if not 0 <= first_offset < DAYS_AHEAD:
             continue
         summary = published.run_summary(run=run)
         points = published.overview_points(run=run, summary=summary)
         order = sorted(summary.updates, key=lambda update_id: summary.updates[update_id][1])
         first_values = points.values[:, first_offset].astype(numpy.int64)
-        last_offset = _offset(run=run, target_date=last)
+        last_offset = day_offset(run=run, target_date=last)
         if 0 <= last_offset < DAYS_AHEAD:
             last_values = points.values[:, last_offset].astype(numpy.int64)
         else:
@@ -155,8 +155,8 @@ def _collect(*, current: published.PublishedMap, first: date, last: date) -> lis
     entries = []
     for entry in chosen:
         region = regions.get(entry.pop("region_code"), "")
-        latitude, longitude = _centre(square_id=entry["square_id"])
-        detail = _read_detail(
+        latitude, longitude = square_centre(square_id=entry["square_id"])
+        detail = read_detail(
             square_id=entry["square_id"], target_date=first, update_id=entry["update_id"]
         )
         entries.append(
@@ -165,7 +165,7 @@ def _collect(*, current: published.PublishedMap, first: date, last: date) -> lis
                 "title": f"{entry['name']}, {region}" if region else entry["name"],
                 "latitude": latitude,
                 "longitude": longitude,
-                "facts": _hero_facts(detail=detail) if detail is not None else None,
+                "facts": hero_facts(detail=detail) if detail is not None else None,
             }
         )
     return entries
