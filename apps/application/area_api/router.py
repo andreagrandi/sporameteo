@@ -889,10 +889,121 @@ def _detail_response(
     )
 
 
-def _detail_json(*, body: dict[str, Any], update_id: UUID) -> JsonResponse:
-    """Answer with a stored body and the published run that holds the update right now."""
+def _with_run_id(*, body: dict[str, Any], update_id: UUID) -> dict[str, Any]:
+    """Add the published run that holds the update right now to a stored body."""
     selection = {**body["selection"], "run_id": published.run_id_for_update(update_id=update_id)}
-    return JsonResponse({**body, "selection": selection})
+    return {**body, "selection": selection}
+
+
+def read_area_detail(
+    *, square_id: str, target_date: date, update_id: UUID
+) -> dict[str, Any] | Status[ApiErrorSchema]:
+    """Return the detail body of one square for one date and update, or the API error.
+
+    The endpoint and the landing page both call it, and it keeps each body in the map cache.
+    """
+    stored = published.cached_detail(
+        update_id=update_id,
+        square_id=square_id,
+        target_date=target_date,
+    )
+    if stored is not None:
+        return _with_run_id(body=stored, update_id=update_id)
+    update = (
+        EstimateUpdate.objects.select_related(
+            "snapshot", "forest_build__grid_build", "terrain_build"
+        )
+        .filter(public_id=update_id)
+        .first()
+    )
+    if update is None:
+        return Status(
+            410,
+            _error(
+                code="update_expired",
+                message="The requested estimate update is no longer available.",
+                message_key="area.update_expired",
+                details={"update_id": str(update_id)},
+            ),
+        )
+    last_date = update.assessment_date + timedelta(days=7)
+    if not update.assessment_date <= target_date <= last_date:
+        return Status(
+            400,
+            _error(
+                code="invalid_date",
+                message="target_date is outside the eight dates in update_id.",
+                message_key="area.date_not_in_update",
+                details={
+                    "assessment_date": update.assessment_date.isoformat(),
+                    "last_target_date": last_date.isoformat(),
+                },
+            ),
+        )
+    forest_cell = (
+        ForestCell.objects.select_related(
+            "grid_build_cell__cell__municipality", "chunk"
+        )
+        .filter(
+            build_id=update.forest_build_id,
+            grid_build_cell__cell__cell_id=square_id,
+        )
+        .first()
+    )
+    if forest_cell is None:
+        return Status(
+            404,
+            _error(
+                code="square_unknown",
+                message="The requested square is not in this forest build.",
+                message_key="area.square_unknown",
+                details={"square_id": square_id},
+            ),
+        )
+    if forest_cell.is_forest is None or forest_cell.forest_share is None:
+        return _classification_error(
+            code="missing_forest_data",
+            message="The selected square has no required forest data.",
+            message_key="area.missing_forest_data",
+            square_id=square_id,
+            target_date=target_date,
+            update_id=update.public_id,
+        )
+    if forest_cell.is_forest is False or forest_cell.forest_share < 0.1:
+        return _classification_error(
+            code="no_forest",
+            message="The selected square has no forest for this estimate.",
+            message_key="area.no_forest",
+            square_id=square_id,
+            target_date=target_date,
+            update_id=update.public_id,
+        )
+    mismatch = _square_update_matches_weather_cell(
+        square_id=square_id,
+        update=update,
+        forest_cell=forest_cell,
+    )
+    if mismatch is not None:
+        return mismatch
+    read = read_estimate(
+        update_id=update.public_id,
+        forest_cell_id=forest_cell.id,
+        target_date=target_date,
+    )
+    detail = _detail_response(
+        update=update,
+        forest_cell=forest_cell,
+        target_date=target_date,
+        read=read,
+    )
+    body = detail.model_dump(mode="json")
+    published.store_detail(
+        update_id=update_id,
+        square_id=square_id,
+        target_date=target_date,
+        body=body,
+    )
+    return _with_run_id(body=body, update_id=update_id)
 
 
 @router.get(
@@ -975,112 +1086,15 @@ def area_detail(
                 message_key="area.invalid_update_id",
             ),
         )
-    stored = published.cached_detail(
-        update_id=parsed_update,
-        square_id=square_id,
-        target_date=parsed_date,
-    )
-    if stored is not None:
-        return _detail_json(body=stored, update_id=parsed_update)
-    update = (
-        EstimateUpdate.objects.select_related(
-            "snapshot", "forest_build__grid_build", "terrain_build"
-        )
-        .filter(public_id=parsed_update)
-        .first()
-    )
-    if update is None:
-        return Status(
-            410,
-            _error(
-                code="update_expired",
-                message="The requested estimate update is no longer available.",
-                message_key="area.update_expired",
-                details={"update_id": str(parsed_update)},
-            ),
-        )
-    last_date = update.assessment_date + timedelta(days=7)
-    if not update.assessment_date <= parsed_date <= last_date:
-        return Status(
-            400,
-            _error(
-                code="invalid_date",
-                message="target_date is outside the eight dates in update_id.",
-                message_key="area.date_not_in_update",
-                details={
-                    "assessment_date": update.assessment_date.isoformat(),
-                    "last_target_date": last_date.isoformat(),
-                },
-            ),
-        )
-    forest_cell = (
-        ForestCell.objects.select_related(
-            "grid_build_cell__cell__municipality", "chunk"
-        )
-        .filter(
-            build_id=update.forest_build_id,
-            grid_build_cell__cell__cell_id=square_id,
-        )
-        .first()
-    )
-    if forest_cell is None:
-        return Status(
-            404,
-            _error(
-                code="square_unknown",
-                message="The requested square is not in this forest build.",
-                message_key="area.square_unknown",
-                details={"square_id": square_id},
-            ),
-        )
-    if forest_cell.is_forest is None or forest_cell.forest_share is None:
-        return _classification_error(
-            code="missing_forest_data",
-            message="The selected square has no required forest data.",
-            message_key="area.missing_forest_data",
-            square_id=square_id,
-            target_date=parsed_date,
-            update_id=update.public_id,
-        )
-    if forest_cell.is_forest is False or forest_cell.forest_share < 0.1:
-        return _classification_error(
-            code="no_forest",
-            message="The selected square has no forest for this estimate.",
-            message_key="area.no_forest",
-            square_id=square_id,
-            target_date=parsed_date,
-            update_id=update.public_id,
-        )
-    mismatch = _square_update_matches_weather_cell(
-        square_id=square_id,
-        update=update,
-        forest_cell=forest_cell,
-    )
-    if mismatch is not None:
-        return mismatch
-    read = read_estimate(
-        update_id=update.public_id,
-        forest_cell_id=forest_cell.id,
-        target_date=parsed_date,
-    )
-    detail = _detail_response(
-        update=update,
-        forest_cell=forest_cell,
-        target_date=parsed_date,
-        read=read,
-    )
-    body = detail.model_dump(mode="json")
-    published.store_detail(
-        update_id=parsed_update,
-        square_id=square_id,
-        target_date=parsed_date,
-        body=body,
-    )
-    return _detail_json(body=body, update_id=parsed_update)
+    result = read_area_detail(square_id=square_id, target_date=parsed_date, update_id=parsed_update)
+    if isinstance(result, Status):
+        return result
+    return JsonResponse(result)
 
 
 __all__ = [
     "AreaDetailSchema",
     "area_detail",
+    "read_area_detail",
     "router",
 ]

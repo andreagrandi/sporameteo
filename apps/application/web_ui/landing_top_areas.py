@@ -7,16 +7,15 @@ tables, and the finished list is kept in the shared map cache.
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import date
 from typing import Any
-from urllib.parse import urlencode
+from uuid import UUID
 
 import numpy
-from django.http import HttpRequest, JsonResponse, QueryDict
+from ninja import Status
 
-from area_api.router import area_detail
+from area_api.router import read_area_detail
 from map_api import published
 from map_api.published import GRID_TO_WGS84, NO_VALUE, _offset
 from national_grid.models import GridCell, GridRegion
@@ -42,19 +41,16 @@ def _centre(*, square_id: str) -> tuple[float, float]:
 
 
 def _read_detail(*, square_id: str, target_date: date, update_id: str) -> dict[str, Any] | None:
-    """Read the area details through the existing detail view and its cache."""
-    request = HttpRequest()
-    request.method = "GET"
-    request.GET = QueryDict(urlencode({"target_date": target_date.isoformat(), "update_id": update_id}))
+    """Read the area details with the function behind the detail endpoint and its cache."""
     try:
-        response = area_detail(request, square_id=square_id)
+        result = read_area_detail(square_id=square_id, target_date=target_date, update_id=UUID(update_id))
     except Exception:
         # The landing page must still render when one detail cannot be built.
         logger.exception("The landing page could not read the details of %s", square_id)
         return None
-    if not isinstance(response, JsonResponse) or response.status_code != 200:
+    if isinstance(result, Status):
         return None
-    return json.loads(response.content)
+    return result
 
 
 def _hero_facts(*, detail: dict[str, Any]) -> dict[str, Any]:
