@@ -12,12 +12,12 @@ from django.test import Client, override_settings
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 
-from map_api import published
+from map_api import published, top_areas
 from map_api.published import NO_VALUE
 from national_grid.models import GridCell, GridRegion, Municipality
 from sporameteo.finds.grid import format_cell_id
 from tests.app.test_map_api import MAP_DATE, map_fixture, publish_run  # noqa: F401
-from web_ui import landing_examples, landing_top_areas
+from web_ui import landing_examples
 from web_ui.formatting import format_date, format_measurement
 
 
@@ -470,7 +470,7 @@ def _publish_scores(
         "facts": [{"role_key": "forest_share", "value": 0.8}],
         "estimate": {"calculated_at": None},
     }
-    monkeypatch.setattr(landing_top_areas, "_read_detail", lambda **kwargs: detail)
+    monkeypatch.setattr(top_areas, "read_detail", lambda **kwargs: detail)
     return ids, region.name
 
 
@@ -485,7 +485,7 @@ def test_top_areas_sort_by_score_keep_one_square_per_municipality_and_skip_gaps(
         specs=[(40, "Alba"), (70, "Bardi"), (70, "Bardi"), (None, "Carpi"), (55, "Dovera"), (99, None)],
     )
 
-    entries = landing_top_areas.top_areas(
+    entries = top_areas.top_areas(
         current=published.published_map(), first=MAP_DATE, last=MAP_DATE + timedelta(days=7)
     )
 
@@ -508,7 +508,7 @@ def test_top_areas_hold_at_most_eight_squares(
         specs=[(30 + index, f"Town {index}") for index in range(10)],
     )
 
-    entries = landing_top_areas.top_areas(current=published.published_map(), first=MAP_DATE, last=MAP_DATE)
+    entries = top_areas.top_areas(current=published.published_map(), first=MAP_DATE, last=MAP_DATE)
 
     assert [entry["first"] for entry in entries] == [39, 38, 37, 36, 35, 34, 33, 32]
 
@@ -521,10 +521,10 @@ def test_second_top_areas_call_is_served_from_the_cache(
         map_fixture=map_fixture, settings=settings, monkeypatch=monkeypatch, specs=[(40, "Alba"), (50, "Bardi")]
     )
     current = published.published_map()
-    first_call = landing_top_areas.top_areas(current=current, first=MAP_DATE, last=MAP_DATE)
+    first_call = top_areas.top_areas(current=current, first=MAP_DATE, last=MAP_DATE)
 
     with CaptureQueriesContext(connection) as queries:
-        second_call = landing_top_areas.top_areas(current=current, first=MAP_DATE, last=MAP_DATE)
+        second_call = top_areas.top_areas(current=current, first=MAP_DATE, last=MAP_DATE)
 
     assert second_call == first_call
     assert all("national_grid" not in query["sql"] for query in queries.captured_queries)
@@ -538,11 +538,11 @@ def test_top_areas_with_a_failed_detail_read_are_cached_for_a_short_time(
         map_fixture=map_fixture, settings=settings, monkeypatch=monkeypatch, specs=[(40, "Alba"), (50, "Bardi")]
     )
     reads = []
-    monkeypatch.setattr(landing_top_areas, "_read_detail", lambda **kwargs: reads.append(kwargs))
+    monkeypatch.setattr(top_areas, "read_detail", lambda **kwargs: reads.append(kwargs))
     current = published.published_map()
 
-    first_call = landing_top_areas.top_areas(current=current, first=MAP_DATE, last=MAP_DATE)
-    second_call = landing_top_areas.top_areas(current=current, first=MAP_DATE, last=MAP_DATE)
+    first_call = top_areas.top_areas(current=current, first=MAP_DATE, last=MAP_DATE)
+    second_call = top_areas.top_areas(current=current, first=MAP_DATE, last=MAP_DATE)
 
     assert [entry["facts"] for entry in first_call] == [None, None]
     assert second_call == first_call
