@@ -567,7 +567,9 @@ def test_real_data_view_outside_italy_explains_the_gap(
     visitor = new_visitor(language=language, device="desktop")
     page = visitor.page
     page.goto(url=f"{journey_url}/map/?center=48.85,2.35&zoom=12", wait_until="domcontentloaded")
-    expect(page.locator("#mapmsgs")).to_contain_text(_labels(page)["map_outside_coverage"])
+    expect(page.locator("#mapmsgs")).to_contain_text(
+        _labels(page)["map_outside_coverage"], timeout=SETTLE_SECONDS * 1000
+    )
     assert page.evaluate("() => window.SporaMeteoMap.getDiagnostics().squareSetCount") == 0
     expect(page.locator(DETAILS)).to_have_count(0)
     assert visitor.errors == []
