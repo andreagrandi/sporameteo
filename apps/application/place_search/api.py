@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from datetime import datetime
 from typing import Literal
 
 from django.conf import settings
@@ -12,6 +13,7 @@ from django.utils import timezone
 from ninja import Router, Schema
 from pyproj import Transformer
 
+from config.api_schemas import ApiErrorSchema
 from national_forest.models import ForestBuild
 from national_grid.models import GridBuildCell, GridRegion
 
@@ -31,6 +33,66 @@ class PlaceResolvePayload(Schema):
     source: Literal["search", "geolocation", "map", "centre", "point"] = "point"
 
 
+class PlaceErrorSchema(Schema):
+    """Describe a place search or resolve error.
+    These errors carry no message_key or details."""
+
+    code: str
+    message: str
+
+
+class PlaceBoundsSchema(Schema):
+    """Describe the WGS84 bounds of one place."""
+
+    west: float
+    south: float
+    east: float
+    north: float
+
+
+class PlaceResultSchema(Schema):
+    """Describe one Italian place found by name."""
+
+    name: str
+    context: str
+    latitude: float
+    longitude: float
+    bounds: PlaceBoundsSchema | None = None
+    osm_id: str | None = None
+
+
+class PlaceSearchResponse(Schema):
+    """Describe the places found for one query.
+    A short query, a cached_only read and a provider search each add their own optional fields."""
+
+    results: list[PlaceResultSchema]
+    cached: bool
+    complete: bool | None = None
+    minimum_length: int | None = None
+    provider: str | None = None
+    attribution: str | None = None
+
+
+class PlacePointSchema(Schema):
+    """Describe one WGS84 point."""
+
+    latitude: float
+    longitude: float
+
+
+class PlaceResolveResponse(Schema):
+    """Describe the grid square that holds one exact point."""
+
+    status: Literal["available"]
+    point: PlacePointSchema
+    representative: PlacePointSchema
+    square_id: str
+    region: str | None
+    coverage: Literal["configured"]
+    source: Literal["search", "geolocation", "map", "centre", "point"]
+    resolved_at: datetime
+
+
 def _error(*, status: int, code: str, message: str, retry_after: int | None = None) -> JsonResponse:
     response = JsonResponse({"code": code, "message": message}, status=status)
     if retry_after is not None:
@@ -38,7 +100,16 @@ def _error(*, status: int, code: str, message: str, retry_after: int | None = No
     return response
 
 
-@router.get("/places/search")
+@router.get(
+    "/places/search",
+    response={
+        200: PlaceSearchResponse,
+        400: PlaceErrorSchema,
+        429: PlaceErrorSchema,
+        502: PlaceErrorSchema,
+        504: PlaceErrorSchema,
+    },
+)
 def places_search(request: HttpRequest) -> HttpResponse:
     """Return selectable Italian Photon results through the same origin."""
     query = (request.GET.get("q") or request.GET.get("query") or "").strip()
@@ -93,7 +164,16 @@ def _configured_forest_build() -> ForestBuild | None:
     ).first()
 
 
-@router.post("/places/resolve")
+@router.post(
+    "/places/resolve",
+    response={
+        200: PlaceResolveResponse,
+        400: PlaceErrorSchema,
+        # Ninja rejects a malformed body with the shared error shape and the same status.
+        422: PlaceErrorSchema | ApiErrorSchema,
+        503: PlaceErrorSchema,
+    },
+)
 def places_resolve(request: HttpRequest, payload: PlaceResolvePayload) -> HttpResponse:
     """Resolve exact WGS84 coordinates to one configured grid cell."""
     latitude = _number(str(payload.latitude), lower=-90, upper=90)

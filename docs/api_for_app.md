@@ -30,11 +30,11 @@ This report adds no endpoints. The endpoints themselves are described in
 | `GET /api/v1/health` | `config.api.health` | none | `HealthResponse` |
 | `GET /api/v1/info` | `map_api.api.info` | none | `InfoResponse`: today, available dates, published run, coverage, limits, forest layer and attributions |
 | `GET /api/v1/squares` | `map_api.api.squares` | `bbox`, `target_date` | `SquaresResponse`: one feature per 500 m square with its score |
-| `GET /api/v1/estimate-overview` | `map_api.api.estimate_overview` | `bbox`, `target_date` | Average scores of larger areas, with no response schema |
+| `GET /api/v1/estimate-overview` | `map_api.api.estimate_overview` | `bbox`, `target_date` | `OverviewResponse`: one feature per larger area with its average score |
 | `GET /api/v1/forest-layer` | `map_api.api.forest_layer` | none | The gzip forest overview layer, with no response schema |
 | `GET /api/v1/areas/{square_id}` | `area_api.router.area_detail` | `target_date`, optional `update_id` | `AreaDetailSchema`: score, weather, facts and sources of one square |
-| `GET /api/v1/places/search` | `place_search.api.places_search` | `q`, `lang`, optional `cached_only` | Place results, with no response schema |
-| `POST /api/v1/places/resolve` | `place_search.api.places_resolve` | `latitude`, `longitude`, `source` | The square that holds the point, with no response schema |
+| `GET /api/v1/places/search` | `place_search.api.places_search` | `q`, `lang`, optional `cached_only` | `PlaceSearchResponse`: the places found, each with name, context and coordinates |
+| `POST /api/v1/places/resolve` | `place_search.api.places_resolve` | `latitude`, `longitude`, `source` | `PlaceResolveResponse`: the square that holds the point and its region |
 
 ## Map features
 
