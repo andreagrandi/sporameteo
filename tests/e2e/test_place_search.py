@@ -759,6 +759,18 @@ def test_stale_location_callbacks_cannot_replace_newer_search_or_map_selection(
     expect(root).to_have_attribute("data-selection-source", "search")
     expect(root).to_have_attribute("data-point-latitude", "44.1305")
 
+    # The details panel opens when its data arrives and makes the map narrower,
+    # which moves the square. Read its position only after the map has resized.
+    page.wait_for_function(
+        """
+        () => {
+          const map = window.SporaMeteoMap.map;
+          return !!document.querySelector('aside[data-live-details]')
+            && map.getCanvas().clientWidth === map.getContainer().clientWidth;
+        }
+        """,
+        timeout=10_000,
+    )
     wait_for_map_settled(page)
     page.wait_for_function(
         """
