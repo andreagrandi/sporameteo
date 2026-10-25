@@ -16,8 +16,8 @@ APP_JS = Path(__file__).resolve().parents[2] / "apps/application/web_ui/static/w
 # Every API call in app.js, with the response codes the schema must declare.
 # Update this list when app.js calls a new endpoint.
 WEB_PAGE_CALLS = {
-    ("get", "/api/v1/places/search"): {"200"},
-    ("post", "/api/v1/places/resolve"): {"200"},
+    ("get", "/api/v1/places/search"): {"200", "400", "429", "502", "504"},
+    ("post", "/api/v1/places/resolve"): {"200", "400", "422", "503"},
     ("get", "/api/v1/areas/{square_id}"): {"200", "400", "404", "409", "410"},
     ("get", "/api/v1/forest-layer"): {"200", "503"},
     ("get", "/api/v1/estimate-overview"): {"200", "400", "503"},
@@ -53,7 +53,7 @@ def test_schema_is_valid_openapi() -> None:
 def test_schema_reports_version_and_description() -> None:
     info = api.get_openapi_schema()["info"]
 
-    assert info["version"] == "1.1.0"
+    assert info["version"] == "1.1.1"
     assert info["description"] == (
         "Mushroom growing conditions for each map square in Italy, "
         "based on recent weather and forest cover."
@@ -88,6 +88,54 @@ def test_top_areas_path_lists_its_fields_and_the_unavailable_error() -> None:
         "rank", "square_id", "update_id", "municipality", "region", "latitude", "longitude", "percentage",
     }
     assert "503" in operation["responses"]
+
+
+def _component(*, schema: dict, ref: str) -> dict:
+    """Return the component schema that one $ref points to."""
+    return schema["components"]["schemas"][ref.rsplit("/", 1)[1]]
+
+
+def _ok_schema(*, schema: dict, method: str, path: str) -> dict:
+    """Return the component schema of the 200 answer of one operation."""
+    operation = schema["paths"][path][method]
+    ref = operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
+    return _component(schema=schema, ref=ref)
+
+
+def test_place_search_path_lists_its_fields() -> None:
+    schema = _served_schema()
+
+    response_schema = _ok_schema(schema=schema, method="get", path="/api/v1/places/search")
+    result_schema = _component(schema=schema, ref=response_schema["properties"]["results"]["items"]["$ref"])
+    assert set(response_schema["properties"]) == {
+        "results", "cached", "complete", "minimum_length", "provider", "attribution",
+    }
+    assert set(response_schema["required"]) == {"results", "cached"}
+    assert set(result_schema["properties"]) == {"name", "context", "latitude", "longitude", "bounds", "osm_id"}
+
+
+def test_place_resolve_path_lists_its_fields() -> None:
+    schema = _served_schema()
+
+    response_schema = _ok_schema(schema=schema, method="post", path="/api/v1/places/resolve")
+    assert set(response_schema["properties"]) == {
+        "status", "point", "representative", "square_id", "region", "coverage", "source", "resolved_at",
+    }
+
+
+def test_estimate_overview_path_lists_its_fields() -> None:
+    schema = _served_schema()
+
+    response_schema = _ok_schema(schema=schema, method="get", path="/api/v1/estimate-overview")
+    feature_schema = _component(schema=schema, ref=response_schema["properties"]["features"]["items"]["$ref"])
+    properties_schema = _component(schema=schema, ref=feature_schema["properties"]["properties"]["$ref"])
+    assert set(response_schema["properties"]) == {
+        "type", "run_id", "assessment_date", "target_date", "area_size_m", "features",
+    }
+    assert set(properties_schema["properties"]) == {
+        "overview", "target_date", "state", "percentage", "assessment_date", "calculated_at",
+        "forest_square_count", "scored_square_count",
+    }
 
 
 def test_export_command_prints_the_schema_as_json() -> None:

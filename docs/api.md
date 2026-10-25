@@ -17,6 +17,8 @@ unvalidated. It does not measure a visitor's chance of finding a mushroom.
 | `GET /top-areas` | The best scoring municipalities of the first available date, best score first. |
 | `GET /estimate-overview?bbox=west,south,east,north&target_date=YYYY-MM-DD` | Average scores of the published regions in larger areas, for views wider than the square limit. |
 | `GET /areas/{square_id}?target_date=YYYY-MM-DD&update_id=UUID` | One exact saved estimate and the inputs behind it. Omit the UUID only to classify a square with no selected update. |
+| `GET /places/search?q=NAME&lang=it` | Italian places that match a name. |
+| `POST /places/resolve` | The grid square that holds one exact point. |
 
 Coordinates use WGS84 longitude and latitude. Square IDs identify the national
 500 m grid. Dates use Europe/Rome. The map accepts the dates of the published
@@ -198,6 +200,45 @@ each run holds only the squares of its own region. The top-level `run_id` is
 the `map_id` and the top-level `assessment_date` is the one of the newest run.
 The `assessment_date` of an area is the oldest date among the runs of its
 scored squares, and its `calculated_at` is the oldest calculation time.
+
+`OverviewResponse` has `type`, `run_id`, `assessment_date`, `target_date`,
+`area_size_m` and `features`. The `properties` of each area hold `overview`,
+`target_date`, `state`, `percentage`, `assessment_date`, `calculated_at`,
+`forest_square_count` and `scored_square_count`. An area with any unscored
+square has state `unavailable` and no percentage.
+
+## Places
+
+`GET /places/search` finds Italian places through Photon, a place search
+service built on OpenStreetMap data. It returns `results`, a list of up to 8
+places with `name`, `context`, `latitude`, `longitude` and the optional
+`bounds` and `osm_id`. It also returns `cached`. The other fields depend on
+the request:
+
+- A query shorter than the minimum adds `minimum_length` and returns no
+  results.
+- `cached_only=1` reads only stored searches and adds `complete`, which is
+  true when a stored search matched the whole query.
+- A search sent to Photon adds `provider` and `attribution`.
+
+`POST /places/resolve` takes `latitude`, `longitude` and `source`. It returns
+`status`, the requested `point`, the `representative` point at the square
+centre, `square_id`, `region`, `coverage`, `source` and `resolved_at`.
+
+The errors of these two routes carry only `code` and `message`:
+
+| HTTP status | Code | Meaning |
+| --- | --- | --- |
+| 400 | `invalid_query` | The search query is longer than 120 characters. |
+| 400 | `invalid_coordinates` | The point is not a finite WGS84 point. |
+| 422 | `outside_italy`, `outside_configured_coverage` | The point is outside Italy, or in Italy but outside the map. |
+| 429 | `throttled` | The application or Photon asks the client to wait. The `Retry-After` header gives the seconds. |
+| 502 | `provider_unavailable` | Photon failed or sent an unreadable answer. |
+| 504 | `provider_timeout` | Photon did not answer in time. |
+| 503 | `coverage_unconfigured` | The map coverage is not configured. |
+
+An invalid request body to `/places/resolve` returns 422 `invalid_request` in
+the shared error shape.
 
 ## Selected-area details
 

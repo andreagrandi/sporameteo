@@ -163,6 +163,39 @@ class TopAreasResponse(Schema):
     areas: list[TopAreaSchema]
 
 
+class OverviewPropertiesSchema(Schema):
+    """Describe the average score of one overview area."""
+
+    overview: Literal[True]
+    target_date: date
+    state: Literal["available", "unavailable"]
+    percentage: int | None
+    assessment_date: date | None
+    calculated_at: datetime | None
+    forest_square_count: int
+    scored_square_count: int
+
+
+class OverviewFeatureSchema(Schema):
+    """Describe one GeoJSON overview area."""
+
+    type: Literal["Feature"]
+    id: str
+    geometry: dict[str, Any]
+    properties: OverviewPropertiesSchema
+
+
+class OverviewResponse(Schema):
+    """Describe one GeoJSON collection of overview areas."""
+
+    type: Literal["FeatureCollection"]
+    run_id: str
+    assessment_date: date
+    target_date: date
+    area_size_m: int
+    features: list[OverviewFeatureSchema]
+
+
 def _today() -> date:
     """Return today's date at the Europe/Rome boundary."""
     return weather_services.italian_assessment_date()
@@ -501,7 +534,7 @@ def _layer_error() -> JsonResponse:
     )
 
 
-@router.get("/estimate-overview", response={200: Any, 400: ApiErrorSchema, 503: ApiErrorSchema})
+@router.get("/estimate-overview", response={200: OverviewResponse, 400: ApiErrorSchema, 503: ApiErrorSchema})
 def estimate_overview(request: HttpRequest) -> HttpResponse:
     """Average stored forest-square scores of the published run into bounded overview areas."""
     bbox, error = _parse_bbox(request.GET.get("bbox"))
@@ -670,6 +703,7 @@ __all__ = [
     "GRID_TO_WGS84",
     "WGS84_TO_GRID",
     "InfoResponse",
+    "OverviewResponse",
     "SquaresResponse",
     "TopAreasResponse",
     "forest_layer",
