@@ -16,7 +16,7 @@ This report adds no endpoints. The endpoints themselves are described in
 
 | Route | View | Phone app needs it | Reason |
 |---|---|---|---|
-| `/` | `web_ui.views.landing` | Partly | The app needs the best areas list, which is built on the server, but not the rest of the landing page. |
+| `/` | `web_ui.views.landing` | Partly | The app needs the best areas list, which `GET /api/v1/top-areas` now serves, but not the rest of the landing page. |
 | `/map/` | `web_ui.views.map_page` | Yes | The map is the main feature, and the browser already reads all its data from `/api/v1/`. |
 | `/map/fixture/<fixture>/` | `web_ui.views.map_page` | No | These pages hold fixed test data and are off unless `SPORAMETEO_UI_FIXTURE_PAGES` is set. |
 | `/privacy/` | `web_ui.views.privacy` | No endpoint | An app store listing needs a privacy policy link, and the app can open this web page. |
@@ -64,20 +64,20 @@ The browser code does not run on the landing page.
 
 | Feature | Data source | Phone app needs it | Reason |
 |---|---|---|---|
-| Best areas today, up to 8 municipalities | `map_api.top_areas.top_areas`, built on the server | Yes | The app has no way to get this list today, and it is a quick start for users who have no place in mind. |
+| Best areas today, up to 8 municipalities | `map_api.top_areas.top_areas`, served by `GET /api/v1/top-areas` | Yes, already served | The endpoint gives the app this list, and it is a quick start for users who have no place in mind. |
 | Hero card of one area | One random entry of the best areas, with facts read from `read_area_detail` | No | It is a teaser for the map, and the app can open the details panel for a best area. |
 | Four fixed example areas | `map_api.published.read_squares` for fixed squares in `AREA_SQUARES` | No | They show what the map does to a new visitor. |
 | Text sections on the method, the factors and foraging ethics | Translated text in `landing.html` | No | The app can ship this text or link to the website. |
 | Older result notice | `current.newest.assessment_date` compared with today | Yes, already served | `GET /api/v1/info` holds the same dates. |
 
-## Endpoint to add
+## Best areas endpoint
 
 ### Best areas
 
 `GET /api/v1/top-areas`
 
-Inputs: none. The list always covers the first available date, as the landing
-page does today.
+The endpoint takes no input. The list always covers the first available date,
+as the landing page does.
 
 Output fields:
 
@@ -120,7 +120,7 @@ profile. That work belongs with the account tickets, not with these endpoints.
 | Scores of squares | `map_api.published.read_squares` | Shared. The `/squares` endpoint and the landing example cards both call it. |
 | Available dates | `map_api.published.PublishedMap.available_dates` | Shared. `/info` and `landing_examples` both call it with `weather_on_demand.services.italian_assessment_date`. |
 | Area details | `area_api.router.read_area_detail` | Shared. The `/areas/{square_id}` endpoint and `map_api.top_areas.read_detail` both call it. It returns the detail body or the API error. |
-| Best areas | `map_api.top_areas.top_areas` | Only the landing page calls it today. It lives in `map_api` and finds the column of a date in each run with the public `map_api.published.day_offset`, so the `/top-areas` endpoint of #209 can call it without importing from `web_ui`. |
+| Best areas | `map_api.top_areas.top_areas` | Shared. The landing page and `GET /api/v1/top-areas` both call it. It lives in `map_api` and finds the column of a date in each run with the public `map_api.published.day_offset`, so it needs nothing from `web_ui`. |
 
 The map page renders 8 dates on the server with `web_ui.views._dates`, from
 `timezone.localdate`. The browser then replaces them with the dates from

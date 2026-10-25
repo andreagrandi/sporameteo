@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 api = NinjaAPI(
     title="SporaMeteo API",
-    version="1.0.0",
+    version="1.1.0",
     description=(
         "Mushroom growing conditions for each map square in Italy, "
         "based on recent weather and forest cover."

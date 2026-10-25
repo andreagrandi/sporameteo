@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 TOP_COUNT = 8
 NAME_BLOCK = 300
-CACHE_KEY = "landing-top-areas-v1:{map_id}:{first}:{last}"
+CACHE_KEY = "landing-top-areas-v2:{map_id}:{first}:{last}"
 CACHE_SECONDS = 24 * 60 * 60
 RETRY_SECONDS = 15 * 60
 DAYS_AHEAD = 8
@@ -163,6 +163,7 @@ def _collect(*, current: published.PublishedMap, first: date, last: date) -> lis
             {
                 **entry,
                 "title": f"{entry['name']}, {region}" if region else entry["name"],
+                "region": region or None,
                 "latitude": latitude,
                 "longitude": longitude,
                 "facts": hero_facts(detail=detail) if detail is not None else None,

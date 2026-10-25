@@ -53,7 +53,7 @@ def test_schema_is_valid_openapi() -> None:
 def test_schema_reports_version_and_description() -> None:
     info = api.get_openapi_schema()["info"]
 
-    assert info["version"] == "1.0.0"
+    assert info["version"] == "1.1.0"
     assert info["description"] == (
         "Mushroom growing conditions for each map square in Italy, "
         "based on recent weather and forest cover."
@@ -73,6 +73,21 @@ def test_schema_has_every_web_page_call_with_its_response_codes() -> None:
         assert path in paths, path
         assert method in paths[path], f"{method} {path}"
         assert set(paths[path][method]["responses"]) == codes, f"{method} {path}"
+
+
+def test_top_areas_path_lists_its_fields_and_the_unavailable_error() -> None:
+    schema = _served_schema()
+    operation = schema["paths"]["/api/v1/top-areas"]["get"]
+
+    ok_ref = operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
+    response_schema = schema["components"]["schemas"][ok_ref.rsplit("/", 1)[1]]
+    area_ref = response_schema["properties"]["areas"]["items"]["$ref"]
+    area_schema = schema["components"]["schemas"][area_ref.rsplit("/", 1)[1]]
+    assert set(response_schema["properties"]) == {"target_date", "run_id", "areas"}
+    assert set(area_schema["properties"]) == {
+        "rank", "square_id", "update_id", "municipality", "region", "latitude", "longitude", "percentage",
+    }
+    assert "503" in operation["responses"]
 
 
 def test_export_command_prints_the_schema_as_json() -> None:

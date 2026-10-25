@@ -573,3 +573,38 @@ def test_landing_hero_shows_the_picked_area_and_the_list_links_to_the_map(
     assert first_row is not None
     assert first_row.group(1).startswith(f"/map/?square={ids[1]}&amp;date={MAP_DATE.isoformat()}&amp;center=")
     assert "zoom=13&amp;details=true" in first_row.group(1)
+
+
+@pytest.mark.django_db(transaction=True)
+def test_top_areas_endpoint_returns_the_ranking_the_landing_page_shows(
+    map_fixture: dict[str, object], monkeypatch: pytest.MonkeyPatch, settings,  # noqa: F811
+) -> None:
+    ids, region_name = _publish_scores(
+        map_fixture=map_fixture,
+        settings=settings,
+        monkeypatch=monkeypatch,
+        specs=[(40, "Alba"), (70, "Bardi"), (70, "Bardi"), (None, "Carpi"), (55, "Dovera")],
+    )
+    monkeypatch.setattr("map_api.api._today", lambda: MAP_DATE)
+    client = Client(HTTP_ACCEPT_LANGUAGE="en-GB,en;q=0.9")
+
+    response = client.get("/api/v1/top-areas")
+    landing = client.get(path="/").content.decode()
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["target_date"] == MAP_DATE.isoformat()
+    assert body["run_id"] == published.published_map().map_id
+    assert [area["rank"] for area in body["areas"]] == [1, 2, 3]
+    assert [area["square_id"] for area in body["areas"]] == [ids[1], ids[4], ids[0]]
+    assert [area["municipality"] for area in body["areas"]] == ["Bardi", "Dovera", "Alba"]
+    assert [area["percentage"] for area in body["areas"]] == [70, 55, 40]
+    assert {area["region"] for area in body["areas"]} == {region_name}
+    assert all(area["update_id"] for area in body["areas"])
+    assert set(body["areas"][0]) == {
+        "rank", "square_id", "update_id", "municipality", "region", "latitude", "longitude", "percentage",
+    }
+    links = re.findall(r"data-landing-top-area>\s*<a[^>]*href=\"([^\"]+)\"", landing)
+    assert [re.search(r"square=([^&]+)", link).group(1) for link in links] == [
+        area["square_id"] for area in body["areas"]
+    ]

@@ -19,7 +19,7 @@ from ninja import Router, Schema
 from pyproj import Geod
 
 from config.api_schemas import ApiErrorSchema
-from map_api import published
+from map_api import published, top_areas
 from map_api.published import GRID_TO_WGS84, WGS84_TO_GRID, MapReadError
 from national_forest.layer import resolve_layer_path, validate_layer
 from national_forest.models import ForestBuild
@@ -140,6 +140,27 @@ class SquaresResponse(Schema):
     target_date: date
     square_count: int
     features: list[SquareFeatureSchema]
+
+
+class TopAreaSchema(Schema):
+    """Describe one of the best scoring areas."""
+
+    rank: int
+    square_id: str
+    update_id: str
+    municipality: str
+    region: str | None
+    latitude: float
+    longitude: float
+    percentage: int
+
+
+class TopAreasResponse(Schema):
+    """Describe the best areas of the first available date."""
+
+    target_date: date
+    run_id: str
+    areas: list[TopAreaSchema]
 
 
 def _today() -> date:
@@ -616,13 +637,44 @@ def squares(request: HttpRequest) -> HttpResponse:
     return _body_response(body=body)
 
 
+@router.get("/top-areas", response={200: TopAreasResponse, 503: ApiErrorSchema})
+def top_areas_endpoint(request: HttpRequest) -> dict[str, Any] | JsonResponse:
+    """Return the best scoring municipalities of the first available date."""
+    del request
+    current = published.published_map()
+    dates = current.available_dates(today=_today()) if current is not None else []
+    if current is None or not dates:
+        return _forecast_unavailable()
+    first, last = dates[0], dates[-1]
+    entries = top_areas.top_areas(current=current, first=first, last=last)
+    return {
+        "target_date": first,
+        "run_id": current.map_id,
+        "areas": [
+            {
+                "rank": rank,
+                "square_id": entry["square_id"],
+                "update_id": entry["update_id"],
+                "municipality": entry["name"],
+                "region": entry["region"],
+                "latitude": entry["latitude"],
+                "longitude": entry["longitude"],
+                "percentage": entry["first"],
+            }
+            for rank, entry in enumerate(entries, start=1)
+        ],
+    }
+
+
 __all__ = [
     "GRID_TO_WGS84",
     "WGS84_TO_GRID",
     "InfoResponse",
     "SquaresResponse",
+    "TopAreasResponse",
     "forest_layer",
     "info",
     "router",
     "squares",
+    "top_areas_endpoint",
 ]
