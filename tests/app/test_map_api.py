@@ -823,11 +823,13 @@ def test_squares_and_overview_return_a_clear_unavailable_error_without_a_publish
         squares = client.get("/api/v1/squares", query)
         overview = client.get("/api/v1/estimate-overview", query)
         info = client.get("/api/v1/info")
+        top = client.get("/api/v1/top-areas")
 
-    for response in (squares, overview):
+    for response in (squares, overview, top):
         assert response.status_code == 503
         assert response.json()["code"] == "forecast_unavailable"
         assert response.json()["message_key"] == "map.forecast_unavailable"
+        assert set(response.json()) == {"code", "message", "message_key", "details"}
     assert info.status_code == 200
     assert info.json()["run"] is None
 

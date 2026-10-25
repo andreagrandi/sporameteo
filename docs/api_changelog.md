@@ -4,6 +4,14 @@ This file records every change to the `/api/v1/` API. Each version heading
 matches `version=` of `NinjaAPI` in `apps/application/config/api.py`.
 `docs/api.md` describes the current behaviour.
 
+## 1.1.0
+
+- `GET /api/v1/top-areas` returns the best scoring municipalities of the
+  first available date. It takes no input. It returns `target_date`, `run_id`
+  and `areas`, a list of up to 8 entries with `rank`, `square_id`,
+  `update_id`, `municipality`, `region`, `latitude`, `longitude` and
+  `percentage`.
+
 ## 1.0.0
 
 The first version. It has these endpoints:

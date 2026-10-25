@@ -14,6 +14,7 @@ unvalidated. It does not measure a visitor's chance of finding a mushroom.
 | `GET /info` | Today's Italian date, the published map, the run of each region, the dates, the coverage of the published regions and map limits. |
 | `GET /forest-layer` | The simplified national forest polygons, with no estimates or weather request. |
 | `GET /squares?bbox=west,south,east,north&target_date=YYYY-MM-DD` | Squares and stored estimates of the published regions for the visible map. |
+| `GET /top-areas` | The best scoring municipalities of the first available date, best score first. |
 | `GET /estimate-overview?bbox=west,south,east,north&target_date=YYYY-MM-DD` | Average scores of the published regions in larger areas, for views wider than the square limit. |
 | `GET /areas/{square_id}?target_date=YYYY-MM-DD&update_id=UUID` | One exact saved estimate and the inputs behind it. Omit the UUID only to classify a square with no selected update. |
 
@@ -86,6 +87,21 @@ The forest layer is the immutable artifact recorded by the completed forest
 build. Its only per-polygon value is `forest_share`. The endpoint checks its
 checksum and sizes. The info and forest-layer endpoints do not call the weather
 provider.
+
+## Best areas
+
+```sh
+curl 'http://127.0.0.1:8010/api/v1/top-areas'
+```
+
+The endpoint takes no input. It covers the first date of `target_dates` in
+`/info` and returns `target_date`, `run_id` and `areas`. `run_id` is the same
+published run as in `/squares`. `areas` holds up to 8 entries, best score
+first, one per municipality. Each entry has `rank`, `square_id`, `update_id`,
+`municipality`, `region`, `latitude`, `longitude` and `percentage`. `region`
+is null when the region has no name in the grid tables. Pass `square_id` and `update_id` to `/areas/{square_id}` for the
+details. The landing page builds its list with the same function, so both show
+the same squares in the same order.
 
 ## Map squares
 
@@ -163,8 +179,8 @@ before north. A broader view returns HTTP 400 before any database read:
 ```
 
 A view that touches the extent of no published region returns 400
-`outside_coverage` without reading squares. Without a published run, `/squares` and
-`/estimate-overview` return 503 `forecast_unavailable`.
+`outside_coverage` without reading squares. Without a published run, `/squares`,
+`/estimate-overview` and `/top-areas` return 503 `forecast_unavailable`.
 
 A permitted view reads its squares from cached 10 km tiles. Missing tiles are
 loaded together with one forest square query and one stored result query. The
