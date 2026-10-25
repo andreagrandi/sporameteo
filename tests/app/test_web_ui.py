@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import ast
 import re
 from datetime import date, timedelta
+from pathlib import Path
 
 import numpy
 import pytest
@@ -607,4 +609,114 @@ def test_top_areas_endpoint_returns_the_ranking_the_landing_page_shows(
     links = re.findall(r"data-landing-top-area>\s*<a[^>]*href=\"([^\"]+)\"", landing)
     assert [re.search(r"square=([^&]+)", link).group(1) for link in links] == [
         area["square_id"] for area in body["areas"]
+    ]
+
+
+API_APPS = ("map_api", "area_api", "place_search")
+ENDPOINT_MODULES = ("area_api.router", "map_api.api", "place_search.api")
+APPLICATION_DIR = Path(landing_examples.__file__).parents[1]
+
+
+def _endpoint_views() -> set[str]:
+    """Return the full names of the functions that a router decorator turns into endpoints.
+
+    Plain functions in the same modules, such as read_area_detail, stay allowed.
+    """
+    views = set()
+    for module in ENDPOINT_MODULES:
+        source = (APPLICATION_DIR / f"{module.replace('.', '/')}.py").read_text(encoding="utf-8")
+        for node in ast.parse(source).body:
+            if isinstance(node, ast.FunctionDef) and any(
+                isinstance(decorator, ast.Call)
+                and isinstance(decorator.func, ast.Attribute)
+                and isinstance(decorator.func.value, ast.Name)
+                and decorator.func.value.id == "router"
+                for decorator in node.decorator_list
+            ):
+                views.add(f"{module}.{node.name}")
+    return views
+
+
+def _dotted_name(node: ast.expr) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        prefix = _dotted_name(node.value)
+        return f"{prefix}.{node.attr}" if prefix else None
+    return None
+
+
+def _api_import_problems(*, source: str, views: set[str]) -> list[str]:
+    """List the endpoint views and private names that one module takes from the API apps."""
+    problems = []
+    bound_modules: dict[str, str] = {}
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.split(".")[0] in API_APPS:
+                    bound = alias.asname or alias.name.split(".")[0]
+                    bound_modules[bound] = alias.name if alias.asname else bound
+        elif isinstance(node, ast.ImportFrom) and node.module and node.module.split(".")[0] in API_APPS:
+            for alias in node.names:
+                full_name = f"{node.module}.{alias.name}"
+                if full_name in views:
+                    problems.append(f"imports endpoint view {full_name}")
+                elif alias.name.startswith("_"):
+                    problems.append(f"imports private name {full_name}")
+                else:
+                    bound_modules[alias.asname or alias.name] = full_name
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Attribute):
+            continue
+        dotted = _dotted_name(node)
+        if dotted is None:
+            continue
+        first, _, rest = dotted.partition(".")
+        if first not in bound_modules or not rest:
+            continue
+        full_name = f"{bound_modules[first]}.{rest}"
+        if full_name in views:
+            problems.append(f"uses endpoint view {full_name}")
+        elif node.attr.startswith("_"):
+            problems.append(f"uses private name {full_name}")
+    return problems
+
+
+def test_website_modules_reach_the_api_apps_only_through_public_functions() -> None:
+    views = _endpoint_views()
+    problems = {
+        path.name: found
+        for path in sorted((APPLICATION_DIR / "web_ui").glob("*.py"))
+        if (found := _api_import_problems(source=path.read_text(encoding="utf-8"), views=views))
+    }
+
+    assert "area_api.router.area_detail" in views
+    assert "area_api.router.read_area_detail" not in views
+    assert problems == {}
+
+
+def test_import_check_catches_endpoint_views_and_private_names() -> None:
+    source = "\n".join(
+        [
+            "from area_api.router import area_detail",
+            "from area_api.router import read_area_detail",
+            "from area_api import router",
+            "router.area_detail(request)",
+            "import map_api.api",
+            "map_api.api.info(request)",
+            "from map_api.published import _offset",
+            "from map_api import top_areas",
+            "top_areas._candidates()",
+        ]
+    )
+
+    problems = _api_import_problems(source=source, views=_endpoint_views())
+
+    assert sorted(problems) == [
+        "imports endpoint view area_api.router.area_detail",
+        "imports private name map_api.published._offset",
+        "uses endpoint view area_api.router.area_detail",
+        "uses endpoint view map_api.api.info",
+        "uses private name map_api.top_areas._candidates",
     ]
